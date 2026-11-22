@@ -6,15 +6,20 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.indication
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -23,6 +28,7 @@ import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -40,7 +46,7 @@ import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.data.persistence.LibraryRepository
 import com.alexandr5476.lifetracing.domain.LibraryTemplateId
@@ -50,6 +56,8 @@ import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
 import com.alexandr5476.lifetracing.ui.theme.spacing
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+
+private const val STATUS_HEIGHT_DIVISOR = 4
 
 @Composable
 internal fun ArchivedTemplatesRoute(
@@ -125,31 +133,37 @@ internal fun ArchivedTemplatesScreen(
         Surface(color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize().then(pageSemantics).settingsKeyboardBack(presentation, onBack)) {
                 ArchivedHeader(focus, presentation, onBack)
-                ArchivedList(
-                    Modifier.weight(1f),
-                    list,
-                    rows,
-                    duplicateNames,
-                    state.pending,
-                    restoreStatus,
-                    restoreEnabled,
-                    focus,
-                    ownsRestore,
-                    onRestore,
-                )
-                ArchivedFeedback(
-                    state,
-                    restoreStatus,
-                    pending?.label,
-                    failed,
-                    isRouteVisible,
-                    focus,
-                    admission,
-                    ownsRestore,
-                    restoreEnabled && failed?.id !in restoreStatus.pending,
-                    onReload,
-                    onRetryRestore,
-                )
+                BoxWithConstraints(Modifier.weight(1f)) {
+                    val statusMaxHeight = maxHeight / STATUS_HEIGHT_DIVISOR
+                    Column(Modifier.fillMaxSize()) {
+                        ArchivedList(
+                            Modifier.weight(1f),
+                            list,
+                            rows,
+                            duplicateNames,
+                            state.pending,
+                            restoreStatus,
+                            restoreEnabled,
+                            focus,
+                            ownsRestore,
+                            onRestore,
+                        )
+                        ArchivedFeedback(
+                            state,
+                            restoreStatus,
+                            pending?.label,
+                            failed,
+                            isRouteVisible,
+                            focus,
+                            admission,
+                            ownsRestore,
+                            restoreEnabled && failed?.id !in restoreStatus.pending,
+                            onReload,
+                            onRetryRestore,
+                            statusMaxHeight = statusMaxHeight,
+                        )
+                    }
+                }
             }
         }
     }
@@ -243,6 +257,7 @@ private fun ArchivedFeedback(
     retryEnabled: Boolean,
     onReload: () -> Unit,
     onRetryRestore: () -> Unit,
+    statusMaxHeight: Dp,
 ) {
     val message = state.feedback(restores, pendingLabel, failed?.label)
     val status = if (visible) Modifier.semantics { liveRegion = LiveRegionMode.Polite } else Modifier
@@ -254,14 +269,24 @@ private fun ArchivedFeedback(
             .fillMaxWidth()
             .padding(horizontal = MaterialTheme.spacing.xLarge, vertical = MaterialTheme.spacing.medium),
     ) {
-        Text(
-            message,
-            modifier = Modifier.testTag(if (state.loading) "archived-loading" else "archived-status").then(status),
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
+        // A long target can scroll independently of the list and the recovery action.
+        Box(
+            if (pendingLabel != null || failed != null) {
+                Modifier
+                    .testTag("archived-feedback-scroll")
+                    .heightIn(max = statusMaxHeight)
+                    .verticalScroll(key(message) { rememberScrollState() })
+            } else {
+                Modifier
+            },
+        ) {
+            Text(
+                message,
+                modifier = Modifier.testTag(if (state.loading) "archived-loading" else "archived-status").then(status),
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         if (state.readFailed) {
             val enabled = !state.loading && state.pending == null
             SettingsActionButton(
@@ -377,6 +402,12 @@ private fun ArchivedRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(row.name, style = MaterialTheme.typography.titleMedium)
+                if (includeIdentity) {
+                    Text(
+                        stringResource(R.string.archived_templates_id, id.value),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
                 row.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
             }
             SettingsActionButton(

@@ -17,6 +17,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -101,9 +102,12 @@ import com.alexandr5476.lifetracing.domain.TimerZeroBehavior
 import com.alexandr5476.lifetracing.domain.WallMonotonicAnchor
 import com.alexandr5476.lifetracing.domain.actionIdentity
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
+import com.alexandr5476.lifetracing.ui.PrimaryWorkflowAppearance
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.LifeTracingAppearance
+import com.alexandr5476.lifetracing.ui.assertTextFullyVisible
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
+import com.alexandr5476.lifetracing.ui.theme.toAccentPalette
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -876,6 +880,71 @@ class DailyScreenPresentationTest {
             .onNodeWithContentDescription(
                 string(R.string.daily_timer_value, string(R.string.daily_remaining, spokenSeconds(3))),
             ).assertExists()
+    }
+
+    @Test
+    fun collapsedCountdownKeepsTimingAndTheFullNextStepReadableAcrossAppearanceChanges() {
+        val appearance = mutableStateOf(PrimaryWorkflowAppearance.EnglishMinimum)
+        val name = "Вечерняя тренировка с дополнительным шагом для восстановления дыхания"
+        val active = countdownSequence(paused = true, nextName = name).active()
+        val running = daily(active, baseline(active.runtime, 7))
+        val state = mutableStateOf(running)
+        val actions = mutableListOf<DailyAction>()
+        val expanded = mutableListOf<SequenceExecutionId>()
+        composeTestRule.setContent {
+            appearance.value.Content {
+                DailyScreen(
+                    state.value,
+                    actions::add,
+                    displayElapsedRealtimeMs = 7_000,
+                    onExpandSequence = { expanded += it },
+                )
+            }
+        }
+        for (configuration in PrimaryWorkflowAppearance.entries.reversed()) {
+            composeTestRule.runOnIdle { appearance.value = configuration }
+            val resources = configuration.resourcesContext(composeTestRule.activity)
+
+            fun label(
+                id: Int,
+                vararg args: Any,
+            ) = resources.getString(id, *args)
+
+            val accent = configuration.preferences.accentPaletteId.toAccentPalette()
+            val colors = if (configuration == PrimaryWorkflowAppearance.RussianMaximum) accent.dark else accent.light
+            val preview =
+                composeTestRule
+                    .onNodeWithText(label(R.string.daily_next_step, name))
+                    .assertTextFullyVisible()
+            assertEquals(colors.onPrimaryContainer, preview.layoutInput.style.color)
+            composeTestRule
+                .onNodeWithContentDescription(
+                    label(R.string.daily_countdown_remaining, label(R.string.daily_duration_seconds, 0, 0, 3)),
+                ).assertTextFullyVisible()
+            composeTestRule
+                .onNodeWithText(label(R.string.daily_sequence_paused_transition))
+                .assertTextFullyVisible()
+        }
+        composeTestRule.runOnIdle { assertTrue(actions.isEmpty() && expanded.isEmpty()) }
+        val expand = composeTestRule.onNodeWithTag("daily-expand-sequence").performScrollTo().assertIsDisplayed()
+        composeTestRule.runOnIdle { state.value = running.copy(commandInFlight = true) }
+        expand.assertIsNotEnabled()
+        composeTestRule.runOnIdle { state.value = running }
+        expand.performClick()
+        composeTestRule.runOnIdle { assertEquals(listOf(active.runtime.execution.id), expanded) }
+        val russian = appearance.value.resourcesContext(composeTestRule.activity)
+        composeTestRule.runOnIdle { state.value = running.copy(load = DailyLoadState.Loading) }
+        composeTestRule.onNodeWithText(russian.getString(R.string.daily_loading)).assertTextFullyVisible()
+        composeTestRule.runOnIdle { state.value = running.copy(load = DailyLoadState.Failure("read failed")) }
+        val failure =
+            composeTestRule.onNodeWithText(russian.getString(R.string.daily_read_failure)).assertTextFullyVisible()
+        assertEquals(Color(0xFFFFDAD6), failure.layoutInput.style.color)
+        composeTestRule
+            .onNode(hasText(russian.getString(R.string.daily_retry)) and hasClickAction())
+            .performScrollTo()
+            .assertIsDisplayed()
+            .performClick()
+        composeTestRule.runOnIdle { assertEquals(listOf(DailyAction.Retry), actions) }
     }
 
     @Test
@@ -1814,9 +1883,12 @@ class DailyScreenPresentationTest {
         return fixture
     }
 
-    private fun countdownSequence(paused: Boolean): SequenceFixture {
+    private fun countdownSequence(
+        paused: Boolean,
+        nextName: String = "Countdown next",
+    ): SequenceFixture {
         val first = snapshot("Countdown first", TimeTrackingMode.TIMER)
-        val next = snapshot("Countdown next")
+        val next = snapshot(nextName)
         var fixture = sequenceFixture(listOf(first, next), countdownSeconds = 5)
         fixture =
             fixture.copy(

@@ -532,12 +532,12 @@ class SettingsScreenTest {
     fun english_and_russian_controls_reflow_at_maximum_app_scale_and_preserve_the_exact_option_sets() {
         val locale = mutableStateOf(Locale.ENGLISH)
         val changes = mutableListOf<SettingsChange>()
-        val appearance = AppearancePreferences(interfaceScalePercent = 120, textScalePercent = 130)
+        val appearance = AppearancePreferences(ThemeMode.DARK, AccentPaletteId.SLATE, 120, 130)
         val state =
             SettingsState(
                 appearance = appearance,
                 language = AppLanguage.SYSTEM,
-                failure = SettingsChange.Theme(ThemeMode.DARK),
+                failure = SettingsChange.Theme(ThemeMode.LIGHT),
             )
         compose.setContent {
             val base = LocalContext.current
@@ -574,8 +574,8 @@ class SettingsScreenTest {
                 .performScrollTo()
                 .assertIsDisplayed()
             val theme = context.getString(R.string.settings_theme)
-            val dark = context.getString(R.string.settings_dark)
-            val description = context.getString(R.string.settings_option_description, theme, dark)
+            val light = context.getString(R.string.settings_light)
+            val description = context.getString(R.string.settings_option_description, theme, light)
             assertMutationStatus(R.string.settings_write_failure, description, context)
             val retryDescription = context.getString(R.string.settings_retry_description, description)
             compose.onNodeWithTag(SETTINGS_RETRY).assert(
@@ -794,7 +794,7 @@ class SettingsScreenTest {
             OptionGroup(
                 "settings-theme",
                 R.string.settings_theme,
-                "SYSTEM",
+                "DARK",
                 listOf(
                     Option("SYSTEM", R.string.settings_system, SettingsChange.Theme(ThemeMode.SYSTEM)),
                     Option("LIGHT", R.string.settings_light, SettingsChange.Theme(ThemeMode.LIGHT)),
@@ -804,7 +804,7 @@ class SettingsScreenTest {
             OptionGroup(
                 "settings-accent",
                 R.string.settings_accent,
-                "DEFAULT",
+                "SLATE",
                 listOf(
                     Option("DEFAULT", R.string.settings_accent_default, SettingsChange.Accent(AccentPaletteId.DEFAULT)),
                     Option("SLATE", R.string.settings_accent_slate, SettingsChange.Accent(AccentPaletteId.SLATE)),

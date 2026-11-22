@@ -633,6 +633,7 @@
     <string name="archived_templates_retry">Повторить восстановление</string>
     <string name="archived_templates_target">%1$s «%2$s»</string>
     <string name="archived_templates_target_with_id">%1$s «%2$s», идентификатор шаблона %3$s</string>
+    <string name="archived_templates_id">Идентификатор шаблона: %1$s</string>
     <string name="archived_templates_row">Архивный шаблон. %1$s</string>
     <string name="archived_templates_row_with_comment">Архивный шаблон. %1$s. Краткий комментарий: %2$s</string>
     <string name="archived_templates_restore_target">Восстановить шаблон: %1$s</string>

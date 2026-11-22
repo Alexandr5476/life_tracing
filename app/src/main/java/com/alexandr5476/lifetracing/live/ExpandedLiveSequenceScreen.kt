@@ -28,6 +28,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -62,7 +63,6 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.alexandr5476.lifetracing.R
@@ -480,6 +480,7 @@ private fun OccurrenceRow(
 ) {
     val identity = occurrenceIdentity(row)
     val current = row.occurrence.status == RuntimeOccurrenceStatus.CURRENT
+    val currentDraft = draft?.takeIf { current && it.occurrenceId == row.occurrence.id }
     val container =
         when (row.occurrence.status) {
             RuntimeOccurrenceStatus.CURRENT -> MaterialTheme.colorScheme.primaryContainer
@@ -511,8 +512,6 @@ private fun OccurrenceRow(
                                 contentDescription = identity
                             },
                         style = MaterialTheme.typography.titleMedium,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
                     )
                     row.activity.shortComment?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                 }
@@ -528,16 +527,26 @@ private fun OccurrenceRow(
             Text(
                 activityTimingText(row, baseline, elapsedNow),
                 modifier = Modifier.semantics { contentDescription = spokenTiming },
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color =
+                    if (current || row.occurrence.status == RuntimeOccurrenceStatus.DELETED_EXECUTION) {
+                        LocalContentColor.current
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
             )
             if (row.occurrence.status != RuntimeOccurrenceStatus.DELETED_EXECUTION) {
-                ValueSummary(row, draft?.takeIf { current && it.occurrenceId == row.occurrence.id })
+                ValueSummary(row, currentDraft)
             }
-            if (current &&
-                expandedActions(sequence.state).editCurrentValues &&
-                draft?.occurrenceId == row.occurrence.id
-            ) {
-                CurrentValueEditor(row, draft, inFlight, controller, editorFocus, isSuspended)
+            if (currentDraft != null && expandedActions(sequence.state).editCurrentValues) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                ) {
+                    Column(Modifier.padding(MaterialTheme.spacing.small)) {
+                        CurrentValueEditor(row, currentDraft, inFlight, controller, editorFocus, isSuspended)
+                    }
+                }
             }
         }
     }

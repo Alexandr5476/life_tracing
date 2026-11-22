@@ -5,6 +5,8 @@ package com.alexandr5476.lifetracing.live
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assert
@@ -16,6 +18,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
@@ -70,8 +73,11 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.TimerZeroBehavior
+import com.alexandr5476.lifetracing.ui.PrimaryWorkflowAppearance
+import com.alexandr5476.lifetracing.ui.assertTextFullyVisible
 import com.alexandr5476.lifetracing.ui.onLazyNode
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
+import com.alexandr5476.lifetracing.ui.theme.toAccentPalette
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -889,6 +895,83 @@ class ExpandedLiveSequenceScreenTest {
     }
 
     @Test
+    fun expandedRouteKeepsCurrentIdentityTimingAndValuesVisibleAcrossAppearanceChanges() {
+        val configuration = mutableStateOf(PrimaryWorkflowAppearance.EnglishMinimum)
+        val name = "Вечерняя тренировка и дополнительная серия дыхательных упражнений"
+        val field = "Количество повторений после восстановительного перерыва"
+        val expanded = expanded(5, currentName = name, valueLabel = field)
+        val commands = mutableListOf<ExpandedSequenceCommand>()
+        var backCalls = 0
+        val controller = controller(expanded, commands)
+        composeRule.setContent {
+            configuration.value.Content {
+                ExpandedLiveSequenceRoute(controller, onBack = { backCalls++ }, onStale = {})
+            }
+        }
+        val baseContext = InstrumentationRegistry.getInstrumentation().targetContext
+        for (appearance in PrimaryWorkflowAppearance.entries.reversed()) {
+            composeRule.runOnIdle { configuration.value = appearance }
+            val context = appearance.resourcesContext(baseContext)
+
+            fun label(
+                id: Int,
+                vararg args: Any,
+            ) = context.getString(id, *args)
+
+            val accent = appearance.preferences.accentPaletteId.toAccentPalette()
+            val dark = appearance == PrimaryWorkflowAppearance.RussianMaximum
+            val colors = if (dark) accent.dark else accent.light
+            val identity = label(R.string.expanded_sequence_occurrence_identity, name, 2)
+            composeRule
+                .onLazyNode(hasContentDescription(identity))
+                .assertTextFullyVisible()
+            val timing =
+                composeRule
+                    .onLazyNode(
+                        hasContentDescription(
+                            label(
+                                R.string.expanded_sequence_stopwatch_elapsed,
+                                label(R.string.expanded_sequence_timing_unavailable),
+                            ),
+                        ),
+                    ).assertTextFullyVisible()
+            assertEquals(colors.onPrimaryContainer, timing.layoutInput.style.color)
+            composeRule
+                .onLazyNode(hasText(label(R.string.expanded_sequence_field_value, field, "6")))
+                .assertTextFullyVisible()
+            val missing =
+                composeRule
+                    .onLazyNode(hasText(label(R.string.expanded_sequence_set_missing)) and hasClickAction())
+                    .assertIsDisplayed()
+                    .assertIsEnabled()
+            val image = missing.captureToImage().toPixelMap()
+            // The TextButton is transparent. Its padding shows the surface underneath the label.
+            assertEquals(if (dark) Color(0xFF191D21) else Color(0xFFF1F4F9), image[1, 1])
+            composeRule
+                .onLazyNode(hasText(label(R.string.expanded_sequence_complete)) and hasClickAction())
+                .assertIsDisplayed()
+                .assertIsEnabled()
+            composeRule
+                .onLazyNode(hasText(label(R.string.expanded_sequence_back)) and hasClickAction())
+                .assertIsDisplayed()
+                .assertIsEnabled()
+        }
+        composeRule.runOnIdle {
+            assertTrue(commands.isEmpty())
+            assertEquals(0, backCalls)
+        }
+        val back =
+            PrimaryWorkflowAppearance.RussianMaximum
+                .resourcesContext(baseContext)
+                .getString(R.string.expanded_sequence_back)
+        composeRule.onLazyNode(hasText(back) and hasClickAction()).performClick()
+        composeRule.runOnIdle {
+            assertTrue(commands.isEmpty())
+            assertEquals(1, backCalls)
+        }
+    }
+
+    @Test
     fun englishAndRussianControlsReflowAtCombinedSystemAndAppScales() {
         val original = InstrumentationRegistry.getInstrumentation().targetContext
         val language = mutableStateOf("en")
@@ -1584,12 +1667,7 @@ class ExpandedLiveSequenceScreenTest {
                 "global" -> R.string.expanded_sequence_end_early
                 else -> R.string.expanded_sequence_confirm
             }
-        val confirmClick =
-            composeRule
-                .onNodeWithText(string(popupAction))
-                .fetchSemanticsNode()
-                .config[androidx.compose.ui.semantics.SemanticsActions.OnClick]
-                .action!!
+        val confirmClick = captureFocusedWindowAction(popupAction)
         composeRule.runOnIdle {
             pending = kotlinx.coroutines.CompletableDeferred()
             controller.refresh()
@@ -1644,18 +1722,12 @@ class ExpandedLiveSequenceScreenTest {
             assertTrue(commands.isEmpty())
             assertEquals(null, controller.state.value.confirmation)
         }
-        val back = composeRule.onNodeWithText(string(R.string.expanded_sequence_back))
-        back.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
-        back.assertIsFocused()
-        sendNativeKey(back, android.view.KeyEvent.KEYCODE_ENTER)
+        focusAndSendEnter(composeRule.onNodeWithText(string(R.string.expanded_sequence_back)))
         composeRule.waitUntil(5_000) { composeRule.runOnIdle { backs == 1 } }
         composeRule.runOnIdle { assertEquals(1, backs) }
         val recovered = original.copy(state = ActiveSequenceState.PAUSED_CURRENT)
         composeRule.runOnIdle { pending = kotlinx.coroutines.CompletableDeferred() }
-        val retry = composeRule.onNodeWithText(string(R.string.expanded_sequence_retry))
-        retry.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
-        retry.assertIsFocused()
-        sendNativeKey(retry, android.view.KeyEvent.KEYCODE_ENTER)
+        focusAndSendEnter(composeRule.onNodeWithText(string(R.string.expanded_sequence_retry)))
         composeRule.waitUntil(5_000) { controller.state.value.loading }
         assertOnlyNavigationAndFeedback(false)
         composeRule.runOnIdle { pending!!.complete(ExpandedLiveSequenceRead.Active(recovered)) }
@@ -1671,9 +1743,7 @@ class ExpandedLiveSequenceScreenTest {
             controller.confirmPending()
             assertTrue(commands.isEmpty())
         }
-        resume.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
-        resume.assertIsFocused()
-        sendNativeKey(resume, android.view.KeyEvent.KEYCODE_ENTER)
+        focusAndSendEnter(resume)
         composeRule.waitUntil(5_000) {
             composeRule.runOnIdle { commands.size == 1 && !controller.state.value.commandInFlight }
         }
@@ -1925,12 +1995,7 @@ class ExpandedLiveSequenceScreenTest {
             )
             composeRule.onNodeWithText(string(R.string.expanded_sequence_go_now)).assertDoesNotExist()
             composeRule.onNodeWithContentDescription(description).performClick()
-            val oldMove =
-                composeRule
-                    .onNodeWithText(string(R.string.expanded_sequence_make_next))
-                    .fetchSemanticsNode()
-                    .config[androidx.compose.ui.semantics.SemanticsActions.OnClick]
-                    .action!!
+            val oldMove = captureFocusedWindowAction(R.string.expanded_sequence_make_next)
             val menuRead = fixture.beginRefresh()
             fixture.finishRefresh(menuRead)
             composeRule.runOnIdle { oldMove() }
@@ -1962,12 +2027,7 @@ class ExpandedLiveSequenceScreenTest {
                         ).performClick()
                     composeRule.onNodeWithText(string(R.string.expanded_sequence_end_early)).performClick()
                 }
-                val oldConfirm =
-                    composeRule
-                        .onNodeWithText(string(R.string.expanded_sequence_confirm))
-                        .fetchSemanticsNode()
-                        .config[androidx.compose.ui.semantics.SemanticsActions.OnClick]
-                        .action!!
+                val oldConfirm = captureFocusedWindowAction(R.string.expanded_sequence_confirm)
                 val pending = fixture.beginRefresh()
                 fixture.finishRefresh(pending)
                 composeRule.onNodeWithText(string(R.string.expanded_sequence_confirm)).assertDoesNotExist()
@@ -2009,13 +2069,7 @@ class ExpandedLiveSequenceScreenTest {
             composeRule.onNodeWithText(string(R.string.expanded_sequence_runtime_add)).performClick()
         }
 
-        fun captureAdd(): () -> Boolean =
-            composeRule
-                .onNodeWithText(string(R.string.expanded_sequence_add))
-                .assertIsEnabled()
-                .fetchSemanticsNode()
-                .config[androidx.compose.ui.semantics.SemanticsActions.OnClick]
-                .action!!
+        fun captureAdd(): () -> Boolean = captureFocusedWindowAction(R.string.expanded_sequence_add)
 
         fun beginRefresh(
             beforeDisposal: (() -> Unit)? = null,
@@ -2054,6 +2108,21 @@ class ExpandedLiveSequenceScreenTest {
         }
     }
 
+    private fun captureFocusedWindowAction(actionId: Int): () -> Boolean {
+        val target = composeRule.onNodeWithText(string(actionId)).assertIsEnabled()
+        // A refresh can dispose the popup as soon as its semantics are available.
+        // Establish native window focus first so recovery exercises the focus handoff.
+        keyboardInput.awaitWindowFocus(target)
+        return target.fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsActions.OnClick].action!!
+    }
+
+    private fun focusAndSendEnter(target: SemanticsNodeInteraction) {
+        keyboardInput.awaitWindowFocus(target)
+        target.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
+        target.assertIsFocused()
+        sendNativeKey(target, android.view.KeyEvent.KEYCODE_ENTER)
+    }
+
     private fun sendNativeKey(
         target: SemanticsNodeInteraction,
         keyCode: Int,
@@ -2069,13 +2138,15 @@ class ExpandedLiveSequenceScreenTest {
     private fun expanded(
         count: Int,
         fields: List<ActivitySnapshotField>? = null,
+        currentName: String = "Activity 1",
+        valueLabel: String = "Value",
     ): ExpandedLiveSequence {
         val valueField =
             ActivitySnapshotField(
                 ActivitySnapshotFieldId("value"),
                 null,
                 0,
-                "Value",
+                valueLabel,
                 type = com.alexandr5476.lifetracing.domain.CustomFieldType.NUMBER,
                 displayPrecision = 0,
                 defaultNumberScaled = 5,
@@ -2085,7 +2156,7 @@ class ExpandedLiveSequenceScreenTest {
                 val activity =
                     ActivityConfigSnapshot(
                         ActivitySnapshotId("activity-$index"),
-                        "Activity $index",
+                        if (index == 1) currentName else "Activity $index",
                         if (index == 0) "Frozen note" else null,
                         TimeTrackingMode.STOPWATCH,
                         null,

@@ -4,6 +4,7 @@ package com.alexandr5476.lifetracing
 
 import android.content.Context
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -43,6 +44,7 @@ import com.alexandr5476.lifetracing.ui.appearance.AppLanguageController
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
 import com.alexandr5476.lifetracing.ui.appearance.ThemeMode
+import com.alexandr5476.lifetracing.ui.renderedTextLayout
 import com.alexandr5476.lifetracing.ui.theme.AccentPaletteId
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -110,14 +112,23 @@ class SettingsProductionRouteTest {
                         val selectedDate = daily.state.value.selectedDate
                         click("daily-settings")
                         awaitSelected("settings-theme-SYSTEM")
+                        awaitSelected("settings-interface-100")
+                        awaitSelected("settings-text-100")
                         var expected = AppearancePreferences(themeMode = ThemeMode.DARK)
                         selectAppearance(repository, "settings-theme-DARK", expected)
+                        awaitBackLabelColor(scenario, Color(0xFF8FCEFA))
                         expected = expected.copy(accentPaletteId = AccentPaletteId.SLATE)
                         selectAppearance(repository, "settings-accent-SLATE", expected)
-                        expected = expected.copy(interfaceScalePercent = 115)
-                        selectAppearance(repository, "settings-interface-115", expected)
-                        expected = expected.copy(textScalePercent = 125)
-                        selectAppearance(repository, "settings-text-125", expected)
+                        awaitBackLabelColor(scenario, Color(0xFF9DCBEB))
+                        expected = expected.copy(interfaceScalePercent = 90)
+                        selectAppearance(repository, "settings-interface-90", expected)
+                        expected = expected.copy(textScalePercent = 90)
+                        selectAppearance(repository, "settings-text-90", expected)
+                        assertRootDensity(scenario, "settings-heading", expected)
+                        expected = expected.copy(interfaceScalePercent = 120)
+                        selectAppearance(repository, "settings-interface-120", expected)
+                        expected = expected.copy(textScalePercent = 130)
+                        selectAppearance(repository, "settings-text-130", expected)
                         scenario.recreate()
                         assertSelections()
                         assertEquals(expected, AppearancePreferencesRepository(context).preferences.first())
@@ -184,7 +195,7 @@ class SettingsProductionRouteTest {
                             click("settings-back")
                             awaitDestination("daily-settings")
                         }
-                        assertDailyDensity(scenario)
+                        assertRootDensity(scenario, "daily-settings", expected)
                         assertEquals(originalRuntime, live.getActiveRuntime())
                         assertEquals(selectedDate, daily.state.value.selectedDate)
                         verifyArchiveKeyboardJourney(scenario)
@@ -292,8 +303,25 @@ class SettingsProductionRouteTest {
         assertEquals(expected, withTimeout(5_000) { repository.preferences.first() })
     }
 
+    private fun awaitBackLabelColor(
+        scenario: ActivityScenario<MainActivity>,
+        color: Color,
+    ) {
+        val label = AtomicReference<String>()
+        scenario.onActivity { label.set(it.getString(R.string.settings_back)) }
+        val back =
+            compose
+                .onNodeWithText(label.get(), useUnmergedTree = true)
+                .performScrollTo()
+                .assertIsDisplayed()
+        compose.waitUntil(5_000) {
+            val style = back.renderedTextLayout().layoutInput.style
+            style.color == color
+        }
+    }
+
     private fun assertSelections() {
-        listOf("settings-theme-DARK", "settings-accent-SLATE", "settings-interface-115", "settings-text-125")
+        listOf("settings-theme-DARK", "settings-accent-SLATE", "settings-interface-120", "settings-text-130")
             .forEach { tag ->
                 awaitSelected(tag)
                 compose
@@ -389,7 +417,11 @@ class SettingsProductionRouteTest {
         assertEquals(language.languageTag, tags.get())
     }
 
-    private fun assertDailyDensity(scenario: ActivityScenario<MainActivity>) {
+    private fun assertRootDensity(
+        scenario: ActivityScenario<MainActivity>,
+        tag: String,
+        appearance: AppearancePreferences,
+    ) {
         val base = AtomicReference<Density>()
         scenario.onActivity {
             base.set(Density(it.resources.displayMetrics.density, it.resources.configuration.fontScale))
@@ -397,13 +429,13 @@ class SettingsProductionRouteTest {
         compose.waitUntil(5_000) {
             val effective =
                 compose
-                    .onAllNodesWithTag("daily-settings")
+                    .onAllNodesWithTag(tag)
                     .fetchSemanticsNodes()
                     .singleOrNull()
                     ?.layoutInfo
                     ?.density
-            effective?.density == base.get().density * 1.15f &&
-                effective?.fontScale == base.get().fontScale * 1.25f
+            effective?.density == base.get().density * (appearance.interfaceScalePercent / 100f) &&
+                effective?.fontScale == base.get().fontScale * (appearance.textScalePercent / 100f)
         }
     }
 

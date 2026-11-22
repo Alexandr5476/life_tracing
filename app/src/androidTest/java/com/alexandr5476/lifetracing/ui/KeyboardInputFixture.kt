@@ -1,6 +1,8 @@
 package com.alexandr5476.lifetracing.ui
 
+import android.app.Activity
 import android.app.KeyguardManager
+import android.content.ContextWrapper
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import android.util.Log
@@ -35,7 +37,7 @@ class KeyboardInputFixture(
     private val compose: ComposeTestRule,
 ) : ExternalResource() {
     private var previousTouchMode: Boolean? = null
-    private val screenFlags = mutableMapOf<View, Boolean>()
+    private val activityScreenFlags = mutableMapOf<View, Boolean>()
 
     // A rule owns its capture budget; later testcases need fresh platform evidence.
     private val systemUiDiagnostics = SystemUiWindowDiagnostics { nativeDiagnosticShell().read(it) }
@@ -65,9 +67,14 @@ class KeyboardInputFixture(
         wakeDisplay()
         val view = (target.fetchSemanticsNode().root as ViewRootForTest).view
         compose.runOnIdle {
-            val root = view.rootView
-            screenFlags.putIfAbsent(root, root.keepScreenOn)
-            root.keepScreenOn = true
+            val activity =
+                generateSequence(view.context) { (it as? ContextWrapper)?.baseContext }
+                    .filterIsInstance<Activity>()
+                    .firstOrNull()
+            // A popup or dialog can have its own root in the same Activity.
+            val decor = checkNotNull(activity) { "The keyboard target must have a host Activity" }.window.decorView
+            activityScreenFlags.putIfAbsent(decor, decor.keepScreenOn)
+            if (!decor.keepScreenOn) decor.keepScreenOn = true
         }
         return view
     }
@@ -176,8 +183,8 @@ class KeyboardInputFixture(
     @Suppress("DEPRECATION") // Restore the platform mode even if the Activity rule has already closed.
     override fun after() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
-            screenFlags.forEach { (view, previous) -> view.keepScreenOn = previous }
-            screenFlags.clear()
+            activityScreenFlags.forEach { (decor, previous) -> decor.keepScreenOn = previous }
+            activityScreenFlags.clear()
         }
         previousTouchMode?.let { InstrumentationRegistry.getInstrumentation().setInTouchMode(it) }
         previousTouchMode = null

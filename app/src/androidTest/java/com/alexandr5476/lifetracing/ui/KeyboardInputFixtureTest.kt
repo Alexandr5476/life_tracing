@@ -3,7 +3,10 @@ package com.alexandr5476.lifetracing.ui
 import android.view.KeyEvent
 import android.view.View
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -25,6 +28,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -36,6 +40,55 @@ class KeyboardInputFixtureTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
     @get:Rule val keyboard = KeyboardInputFixture(compose)
+
+    @Test
+    fun admittingDropdownKeepsOnlyHostActivityAwake() {
+        val shown = mutableStateOf(false)
+        compose.setContent {
+            LifeTracingTheme {
+                Box {
+                    TextButton(onClick = { shown.value = true }, modifier = Modifier.testTag("anchor")) {
+                        Text("Open menu")
+                    }
+                    DropdownMenu(expanded = shown.value, onDismissRequest = { shown.value = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Close menu") },
+                            onClick = { shown.value = false },
+                            modifier = Modifier.testTag("menu-action"),
+                        )
+                    }
+                }
+            }
+        }
+        val activity = compose.activity
+        val hostRoot = compose.runOnIdle { activity.window.decorView }
+        compose.onNodeWithTag("anchor").performClick()
+        val action = compose.onNodeWithTag("menu-action")
+        val popupView = (action.fetchSemanticsNode().root as ViewRootForTest).view
+        val popupRoot = compose.runOnIdle { popupView.rootView }
+        assertNotSame(hostRoot, popupRoot)
+        compose.runOnIdle {
+            assertFalse(hostRoot.keepScreenOn)
+            assertFalse(popupRoot.keepScreenOn)
+        }
+
+        val fixture = KeyboardInputFixture(compose)
+        fixture
+            .apply(
+                object : Statement() {
+                    override fun evaluate() {
+                        fixture.awaitWindowFocus(action)
+                        compose.runOnIdle {
+                            assertTrue(popupRoot.hasWindowFocus())
+                            assertFalse("Popup admission must preserve the popup's flag", popupRoot.keepScreenOn)
+                            assertTrue("The host Activity must keep the screen awake", hostRoot.keepScreenOn)
+                        }
+                    }
+                },
+                Description.createTestDescription(javaClass, "dropdown admission"),
+            ).evaluate()
+        assertFalse("Teardown must restore the host flag", compose.runOnIdle { hostRoot.keepScreenOn })
+    }
 
     @Test
     fun hiddenImeCloseOnBackgroundWindowPreservesFocusedDialog() {

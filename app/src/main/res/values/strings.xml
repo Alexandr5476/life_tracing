@@ -631,6 +631,7 @@
     <string name="archived_templates_retry">Retry Restore</string>
     <string name="archived_templates_target">%1$s “%2$s”</string>
     <string name="archived_templates_target_with_id">%1$s “%2$s”, template ID %3$s</string>
+    <string name="archived_templates_id">Template ID: %1$s</string>
     <string name="archived_templates_row">Archived template. %1$s</string>
     <string name="archived_templates_row_with_comment">Archived template. %1$s. Short comment: %2$s</string>
     <string name="archived_templates_restore_target">Restore %1$s</string>
