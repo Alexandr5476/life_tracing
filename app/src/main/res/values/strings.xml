@@ -662,8 +662,8 @@
     <string name="daily_countdown_remaining">Next-step countdown remaining: %1$s</string>
     <string name="daily_history_no_duration">No live tracking; duration not recorded</string>
     <string name="daily_history_duration">Active duration: %1$s</string>
-    <string name="daily_duration_seconds">%1$d hours, %2$d minutes, %3$d seconds</string>
-    <string name="daily_duration_minutes">%1$d hours, %2$d minutes</string>
+    <string name="daily_duration_seconds">Hours: %1$d, minutes: %2$d, seconds: %3$d</string>
+    <string name="daily_duration_minutes">Hours: %1$d, minutes: %2$d</string>
     <string name="daily_stopwatch_elapsed">Stopwatch elapsed: %1$s</string>
     <string name="daily_timer_value">Timer: %1$s</string>
     <string name="daily_no_live_value">No live tracking. Main value: %1$s</string>

@@ -2023,7 +2023,7 @@ class SequenceHistoryPresentationTest {
                     compose.runOnIdle { locale.value = language }
                     scroll("sequence:root")
                     val executionLabel =
-                        if (isRussian) "ID выполнения Sequence: root" else "Sequence execution ID: root"
+                        if (isRussian) "ID выполнения последовательности: root" else "Sequence execution ID: root"
                     root.assert(hasText(executionLabel))
                     val status =
                         if (index == 0) {

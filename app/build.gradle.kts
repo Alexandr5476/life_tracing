@@ -1,7 +1,9 @@
 import org.gradle.api.DefaultTask
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
+import org.gradle.api.tasks.testing.Test
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 abstract class PrintVersionNameTask : DefaultTask() {
@@ -140,6 +142,14 @@ tasks.register<PrintVersionNameTask>("printVersionName") {
             "Android defaultConfig versionName is not configured."
         },
     )
+}
+
+val productionResources = layout.projectDirectory.dir("src/main/res")
+tasks.withType<Test>().configureEach {
+    inputs
+        .files(productionResources.file("values/strings.xml"), productionResources.file("values-ru/strings.xml"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    systemProperty("lifetracing.productionResources", productionResources.asFile.absolutePath)
 }
 
 dependencies {
