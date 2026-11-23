@@ -3,15 +3,22 @@
 package com.alexandr5476.lifetracing
 
 import android.content.Context
+import android.content.res.Configuration
+import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -38,6 +45,7 @@ import com.alexandr5476.lifetracing.data.persistence.TemplateAuthoringRepository
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
+import com.alexandr5476.lifetracing.settings.SettingsRoute
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
 import com.alexandr5476.lifetracing.ui.appearance.AppLanguage
 import com.alexandr5476.lifetracing.ui.appearance.AppLanguageController
@@ -61,6 +69,7 @@ import org.junit.Test
 import org.junit.rules.RuleChain
 import java.time.Instant
 import java.time.ZoneOffset
+import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicReference
 
@@ -114,6 +123,7 @@ class SettingsProductionRouteTest {
                         awaitSelected("settings-theme-SYSTEM")
                         awaitSelected("settings-interface-100")
                         awaitSelected("settings-text-100")
+                        assertRootDensity(scenario, "settings-heading", AppearancePreferences())
                         var expected = AppearancePreferences(themeMode = ThemeMode.DARK)
                         selectAppearance(repository, "settings-theme-DARK", expected)
                         awaitBackLabelColor(scenario, Color(0xFF8FCEFA))
@@ -199,8 +209,19 @@ class SettingsProductionRouteTest {
                         assertEquals(originalRuntime, live.getActiveRuntime())
                         assertEquals(selectedDate, daily.state.value.selectedDate)
                         verifyArchiveKeyboardJourney(scenario)
+                        click("daily-settings")
+                        assertSelections()
+                        selectAppearance(repository, "settings-theme-LIGHT", expected.copy(themeMode = ThemeMode.LIGHT))
+                        selectAppearance(
+                            repository,
+                            "settings-accent-DEFAULT",
+                            expected.copy(themeMode = ThemeMode.LIGHT, accentPaletteId = AccentPaletteId.DEFAULT),
+                        )
+                        click("settings-back")
+                        awaitDestination("daily-settings")
                         assertEquals(originalRuntime, live.getActiveRuntime())
                         assertEquals(selectedDate, daily.state.value.selectedDate)
+                        verifyInjectedSystemLocales(context, scenario, repository)
                     } finally {
                         changeLocalesAndAwaitRecreation(scenario, originalLanguage.languageTag) {
                             scenario.onActivity {
@@ -222,6 +243,43 @@ class SettingsProductionRouteTest {
         keyboard.enter(node)
         node.performSemanticsAction(SemanticsActions.RequestFocus).assertIsFocused()
         node.performKeyInput { pressKey(Key.Enter) }
+    }
+
+    private fun verifyInjectedSystemLocales(
+        context: Context,
+        scenario: ActivityScenario<MainActivity>,
+        repository: AppearancePreferencesRepository,
+    ) {
+        val locale = mutableStateOf(Locale.ENGLISH)
+        // Supply Settings with two representative effective Android configurations on the
+        // existing Activity. This leaves the device's global language untouched.
+        scenario.onActivity { activity ->
+            activity.setContent {
+                val config = Configuration(LocalConfiguration.current).apply { setLocale(locale.value) }
+                CompositionLocalProvider(
+                    LocalConfiguration provides config,
+                    LocalResources provides activity.createConfigurationContext(config).resources,
+                ) {
+                    SettingsRoute(
+                        repository,
+                        LifeTracingRuntimeGraph.from(context).appearanceMutations,
+                        isRouteVisible = true,
+                        ownsRoute = { true },
+                        onBack = {},
+                        onArchivedTemplates = {},
+                    )
+                }
+            }
+        }
+        awaitSelected("settings-language-SYSTEM")
+        compose.onNodeWithText("Settings").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Back to Daily", useUnmergedTree = true).performScrollTo().assertIsDisplayed()
+        assertPlatformLocales(scenario, AppLanguage.SYSTEM)
+        compose.runOnIdle { locale.value = Locale.forLanguageTag("ru") }
+        awaitSelected("settings-language-SYSTEM")
+        compose.onNodeWithText("Настройки").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Назад к текущему дню", useUnmergedTree = true).performScrollTo().assertIsDisplayed()
+        assertPlatformLocales(scenario, AppLanguage.SYSTEM)
     }
 
     private fun verifyArchiveKeyboardJourney(scenario: ActivityScenario<MainActivity>) {
@@ -363,44 +421,7 @@ class SettingsProductionRouteTest {
         scenario: ActivityScenario<MainActivity>,
         expectedTags: String,
         change: () -> Unit,
-    ) {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val monitor = ActivityLifecycleMonitorRegistry.getInstance()
-        val previous = AtomicReference<MainActivity>()
-        val previousTags = AtomicReference<String>()
-        scenario.onActivity {
-            previous.set(it)
-            previousTags.set(AppCompatDelegate.getApplicationLocales().toLanguageTags())
-        }
-        val resumedReplacement = CountDownLatch(1)
-        val callback =
-            ActivityLifecycleCallback { activity, stage ->
-                if (
-                    activity is MainActivity &&
-                    activity !== previous.get() &&
-                    stage == Stage.RESUMED &&
-                    AppCompatDelegate.getApplicationLocales().toLanguageTags() == expectedTags
-                ) {
-                    resumedReplacement.countDown()
-                }
-            }
-        // The platform override and selected chip can change before locale-triggered recreation
-        // finishes. Register before the command, and await its replacement before an explicit
-        // scenario.recreate(), another locale command, or scenario.close() can race that transition.
-        instrumentation.runOnMainSync { monitor.addLifecycleCallback(callback) }
-        try {
-            change()
-            val changed = previousTags.get() != expectedTags
-            if (changed) compose.waitUntil(10_000) { resumedReplacement.count == 0L }
-            scenario.onActivity {
-                assertEquals(expectedTags, AppCompatDelegate.getApplicationLocales().toLanguageTags())
-                assertEquals(Stage.RESUMED, monitor.getLifecycleStageOf(it))
-                if (changed) assertNotSame(previous.get(), it)
-            }
-        } finally {
-            instrumentation.runOnMainSync { monitor.removeLifecycleCallback(callback) }
-        }
-    }
+    ) = awaitAppLocaleRecreation(compose, scenario, expectedTags, change)
 
     private fun readLanguage(scenario: ActivityScenario<MainActivity>): AppLanguage {
         val value = AtomicReference<AppLanguage>()
@@ -462,5 +483,49 @@ class SettingsProductionRouteTest {
             ActiveSessionKind.SEQUENCE -> live.endSequenceEarly(at)
             null -> Unit
         }
+    }
+}
+
+internal fun awaitAppLocaleRecreation(
+    compose: ComposeTestRule,
+    scenario: ActivityScenario<MainActivity>,
+    expectedTags: String,
+    change: () -> Unit,
+) {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val monitor = ActivityLifecycleMonitorRegistry.getInstance()
+    val previous = AtomicReference<MainActivity>()
+    val previousTags = AtomicReference<String>()
+    scenario.onActivity {
+        previous.set(it)
+        previousTags.set(AppCompatDelegate.getApplicationLocales().toLanguageTags())
+    }
+    val resumedReplacement = CountDownLatch(1)
+    val callback =
+        ActivityLifecycleCallback { activity, stage ->
+            if (
+                activity is MainActivity &&
+                activity !== previous.get() &&
+                stage == Stage.RESUMED &&
+                AppCompatDelegate.getApplicationLocales().toLanguageTags() == expectedTags
+            ) {
+                resumedReplacement.countDown()
+            }
+        }
+    // The platform override and selected chip can change before locale-triggered recreation
+    // finishes. Register before the command, and await its replacement before an explicit
+    // scenario.recreate(), another locale command, or scenario.close() can race that transition.
+    instrumentation.runOnMainSync { monitor.addLifecycleCallback(callback) }
+    try {
+        change()
+        val changed = previousTags.get() != expectedTags
+        if (changed) compose.waitUntil(10_000) { resumedReplacement.count == 0L }
+        scenario.onActivity {
+            assertEquals(expectedTags, AppCompatDelegate.getApplicationLocales().toLanguageTags())
+            assertEquals(Stage.RESUMED, monitor.getLifecycleStageOf(it))
+            if (changed) assertNotSame(previous.get(), it)
+        }
+    } finally {
+        instrumentation.runOnMainSync { monitor.removeLifecycleCallback(callback) }
     }
 }

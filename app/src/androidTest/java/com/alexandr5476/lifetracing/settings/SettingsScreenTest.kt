@@ -82,13 +82,14 @@ class SettingsScreenTest {
         val failed = initial.copy(failure = SettingsChange.Theme(ThemeMode.DARK))
         val state = mutableStateOf(failed)
         val visible = mutableStateOf(true)
+        val appearance = mutableStateOf(AppearancePreferences())
         val mounted = mutableStateOf(true)
         val ownsRoute = { visible.value }
         val changes = mutableListOf<SettingsChange>()
         val commands = mutableListOf<String>()
         compose.setContent {
             if (mounted.value) {
-                LifeTracingAppearance(AppearancePreferences()) {
+                LifeTracingAppearance(appearance.value) {
                     SettingsScreen(
                         state.value,
                         { changes += it },
@@ -129,6 +130,7 @@ class SettingsScreenTest {
             changes.clear()
             commands.clear()
             visible.value = false
+            appearance.value = AppearancePreferences(themeMode = ThemeMode.DARK, textScalePercent = 130)
             retained.forEach { assertFalse(it()) }
         }
         compose.waitForIdle()

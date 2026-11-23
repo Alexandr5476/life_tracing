@@ -62,7 +62,8 @@ class KeyboardInputFixtureTest {
         }
         val activity = compose.activity
         val hostRoot = compose.runOnIdle { activity.window.decorView }
-        compose.onNodeWithTag("anchor").performClick()
+        val anchor = compose.onNodeWithTag("anchor")
+        anchor.performClick()
         val action = compose.onNodeWithTag("menu-action")
         val popupView = (action.fetchSemanticsNode().root as ViewRootForTest).view
         val popupRoot = compose.runOnIdle { popupView.rootView }
@@ -88,6 +89,8 @@ class KeyboardInputFixtureTest {
                 Description.createTestDescription(javaClass, "dropdown admission"),
             ).evaluate()
         assertFalse("Teardown must restore the host flag", compose.runOnIdle { hostRoot.keepScreenOn })
+        action.performSemanticsAction(SemanticsActions.OnClick)
+        awaitHostAfterDismissal(anchor, action, popupView)
     }
 
     @Test
@@ -117,7 +120,7 @@ class KeyboardInputFixtureTest {
         val backgroundView = (background.fetchSemanticsNode().root as ViewRootForTest).view
         background.performSemanticsAction(SemanticsActions.OnClick)
         val confirm = compose.onNodeWithTag("confirm")
-        awaitForegroundDialog(backgroundView, confirm)
+        val dialogView = awaitForegroundDialog(backgroundView, confirm)
         confirm.performSemanticsAction(SemanticsActions.RequestFocus)
         keyboard.awaitFocus(confirm)
         assertTrue(compose.runOnIdle { !backgroundView.hasWindowFocus() })
@@ -127,7 +130,7 @@ class KeyboardInputFixtureTest {
         keyboard.closeKeyboard(background)
         confirm.assertIsFocused()
         keyboard.sendKey(confirm, KeyEvent.KEYCODE_ENTER)
-        compose.onNodeWithTag("confirm").assertDoesNotExist()
+        awaitHostAfterDismissal(background, confirm, dialogView)
     }
 
     @Test
@@ -157,7 +160,7 @@ class KeyboardInputFixtureTest {
         val backgroundView = (background.fetchSemanticsNode().root as ViewRootForTest).view
         background.performSemanticsAction(SemanticsActions.OnClick)
         val foreground = compose.onNodeWithTag("confirm")
-        awaitForegroundDialog(backgroundView, foreground)
+        val dialogView = awaitForegroundDialog(backgroundView, foreground)
         foreground.performSemanticsAction(SemanticsActions.RequestFocus)
         keyboard.awaitFocus(foreground)
 
@@ -184,6 +187,8 @@ class KeyboardInputFixtureTest {
                 Description.createTestDescription(javaClass, "independent diagnostic fixture"),
             ).evaluate()
         keyboard.awaitFocus(foreground)
+        compose.runOnIdle { shown.value = false }
+        awaitHostAfterDismissal(background, foreground, dialogView)
     }
 
     @Suppress("DEPRECATION") // Establish and restore the foreground display's actual input mode.
@@ -240,6 +245,8 @@ class KeyboardInputFixtureTest {
                             rejected.awaitFocus(foreground)
                             rejected.sendKey(foreground, KeyEvent.KEYCODE_ENTER)
                             assertTrue(commands == 1)
+                            compose.runOnIdle { shown.value = false }
+                            awaitHostAfterDismissal(background, foreground, foregroundView)
                         }
                     },
                     Description.createTestDescription(javaClass, "rejected background entry"),
@@ -279,6 +286,18 @@ class KeyboardInputFixtureTest {
             }
         }
         return foreground
+    }
+
+    private fun awaitHostAfterDismissal(
+        host: SemanticsNodeInteraction,
+        dismissed: SemanticsNodeInteraction,
+        dismissedView: View,
+    ) {
+        // Compose can remove the control before Android finishes returning native focus.
+        // Keep the host alive until the outgoing window detaches and the host owns input again.
+        dismissed.assertDoesNotExist()
+        compose.waitUntil(5_000) { compose.runOnIdle { !dismissedView.isAttachedToWindow } }
+        keyboard.awaitWindowFocus(host)
     }
 
     private fun imeVisible(target: SemanticsNodeInteraction): Boolean {

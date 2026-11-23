@@ -947,8 +947,20 @@ class LibraryAccessibilityRouteTest {
             f.addEditorField(com.alexandr5476.lifetracing.domain.CustomFieldType.TEXT)
             f.editorFieldInput(2, R.string.activity_editor_field_name).performTextReplacement("Same")
             f.editorFieldInput(2, R.string.activity_editor_default).performTextReplacement("Text default")
+            val doneLabel = f.text(R.string.activity_editor_done)
+            val retiredSave =
+                requireNotNull(
+                    compose
+                        .onNodeWithText(
+                            doneLabel,
+                        ).performScrollTo()
+                        .fetchSemanticsNode()
+                        .config[SemanticsActions.OnClick]
+                        .action,
+                )
             f.recreate()
             assertSame(session, f.host().activityTemplateEditorRouteSessions.activeSession)
+            compose.runOnIdle { retiredSave() }
             assertEquals(before, f.store.durableFacts())
             val submitted =
                 session.controller.state.value

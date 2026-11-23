@@ -104,7 +104,7 @@ internal class StatisticsJourneyHistory private constructor(
             return StatisticsJourneyHistory(activity, sequenceId, standalone.id)
         }
 
-        private fun activityDraft() =
+        fun activityDraft() =
             ActivityTemplateDraft(
                 SERIES_NAME,
                 null,

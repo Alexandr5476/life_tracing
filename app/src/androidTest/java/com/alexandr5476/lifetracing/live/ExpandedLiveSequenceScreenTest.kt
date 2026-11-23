@@ -2,9 +2,13 @@
 
 package com.alexandr5476.lifetracing.live
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.SemanticsMatcher
@@ -904,8 +908,12 @@ class ExpandedLiveSequenceScreenTest {
         var backCalls = 0
         val controller = controller(expanded, commands)
         composeRule.setContent {
-            configuration.value.Content {
-                ExpandedLiveSequenceRoute(controller, onBack = { backCalls++ }, onStale = {})
+            // Scrolling can align a target with the bottom of the list. Keep the
+            // capture viewport inside the system bars before applying app scaling.
+            Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+                configuration.value.Content {
+                    ExpandedLiveSequenceRoute(controller, onBack = { backCalls++ }, onStale = {})
+                }
             }
         }
         val baseContext = InstrumentationRegistry.getInstrumentation().targetContext
