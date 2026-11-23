@@ -22,6 +22,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
+import com.alexandr5476.lifetracing.domain.StatisticsOverview
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesDetail
 import com.alexandr5476.lifetracing.history.HistoryController
 import com.alexandr5476.lifetracing.runtime.ManifestRuntimeEnvironment
@@ -69,11 +70,20 @@ class MainActivityConfigurationRecoveryTest {
             val originalAppearance = preferences.preferences.first()
             app.withDisposableRuntime { runtime ->
                 val seed: ConfigurationRecoveryFacts
+                val statistics: ExpectedStatistics
                 val baseline: Map<String, Any?>
                 val durable: Map<String, List<List<String?>>>
                 RuntimeRecoveryStore(app, runtime.name).use { store ->
                     seed = ConfigurationRecoveryFacts.seed(store)
                     seed.assertSeed(store)
+                    // Opening a second Room helper during the Statistics route can make Android
+                    // update its SQLite locale metadata while the production reader is active.
+                    val period = ConfigurationRecoveryFacts.period
+                    statistics =
+                        ExpectedStatistics(
+                            store.statistics.overview(period),
+                            store.statistics.seriesDetail(seed.activity.statisticsSeriesId, period),
+                        )
                     baseline = seed.read(store)
                     durable = store.durableFacts()
                 }
@@ -82,8 +92,9 @@ class MainActivityConfigurationRecoveryTest {
                     preferences.setAccentPaletteId(AccentPaletteId.DEFAULT)
                     preferences.setInterfaceScalePercent(100)
                     preferences.setTextScalePercent(100)
-                    verifyRouteRecovery(app, runtime, seed)
+                    verifyRouteRecovery(app, runtime, seed, statistics)
                     assertEquals(changedAppearance, AppearancePreferencesRepository(app).preferences.first())
+                    runtime.close()
                     RuntimeRecoveryStore(app, runtime.name).use { reopened ->
                         val current = seed.read(reopened)
                         baseline.forEach { (reader, before) -> assertEquals(reader, before, current.getValue(reader)) }
@@ -104,11 +115,12 @@ class MainActivityConfigurationRecoveryTest {
         app: RuntimeIsolationApplication,
         runtime: ManifestRuntimeEnvironment,
         seed: ConfigurationRecoveryFacts,
+        statistics: ExpectedStatistics,
     ) {
         var originalLanguage: AppLanguage? = null
         val data = RuntimeRecoveryStore(app, runtime.name)
         data.use { store ->
-            val journey = Journey(seed, store)
+            val journey = Journey(seed, statistics, store)
             try {
                 val previous =
                     ActivityScenario.launch(MainActivity::class.java).use { scenario ->
@@ -146,8 +158,14 @@ class MainActivityConfigurationRecoveryTest {
         val formattedTime: String,
     )
 
+    private data class ExpectedStatistics(
+        val overview: StatisticsOverview,
+        val detail: StatisticsSeriesDetail,
+    )
+
     private inner class Journey(
         private val seed: ConfigurationRecoveryFacts,
+        private val statistics: ExpectedStatistics,
         private val store: RuntimeRecoveryStore,
     ) {
         private val restoreTag = "archived-restore-${seed.archived.archivedRowKey()}"
@@ -253,7 +271,6 @@ class MainActivityConfigurationRecoveryTest {
             }
             overviewNode("statistics-custom-apply").performClick()
             val seriesTag = "statistics-series-${seriesId.value}"
-            val expectedOverview = store.statistics.overview(ConfigurationRecoveryFacts.period)
             val controller = AtomicReference<StatisticsController>()
             scenario.onActivity { activity ->
                 controller.set(
@@ -263,7 +280,7 @@ class MainActivityConfigurationRecoveryTest {
             compose.waitUntil(10_000) {
                 val state = controller.get().state.value
                 state.selectedPeriod == ConfigurationRecoveryFacts.period &&
-                    (state.load as? StatisticsLoadState.Content)?.overview == expectedOverview
+                    (state.load as? StatisticsLoadState.Content)?.overview == statistics.overview
             }
             overviewNode(seriesTag).performClick()
             val locale = locale(scenario)
@@ -273,8 +290,7 @@ class MainActivityConfigurationRecoveryTest {
                     .apply { maximumFractionDigits = 3 }
                     .format(BigDecimal("18446744073709551.614"))
             val numberLine = label(scenario, R.string.statistics_number_total, "$number km")
-            val expected = store.statistics.seriesDetail(seriesId, ConfigurationRecoveryFacts.period)
-            awaitSeries(scenario, expected)
+            awaitSeries(scenario, statistics.detail)
             val staleRefresh =
                 requireNotNull(
                     compose
@@ -287,7 +303,7 @@ class MainActivityConfigurationRecoveryTest {
                         .action,
                 )
             scenario.recreate()
-            awaitSeries(scenario, expected)
+            awaitSeries(scenario, statistics.detail)
             val numberMatcher = hasText(numberLine)
             compose.onNodeWithTag("statistics-detail-list").performScrollToNode(numberMatcher)
             compose.onNode(numberMatcher).performScrollTo().assertIsDisplayed()

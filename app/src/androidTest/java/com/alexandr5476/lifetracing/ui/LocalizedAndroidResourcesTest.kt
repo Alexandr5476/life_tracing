@@ -52,9 +52,11 @@ class LocalizedAndroidResourcesTest {
             listOf("1:30 AM (UTC-04:00, America/New_York)", "1:30 AM (UTC-05:00, America/New_York)"),
             overlapTimestamps(resources("en-US")),
         )
+        val russian = overlapTimestamps(resources("ru-RU"))
+        // Android's Russian short-time pattern can use either H or HH depending on the API's locale data.
         assertEquals(
-            listOf("01:30 (UTC-04:00, America/New_York)", "01:30 (UTC-05:00, America/New_York)"),
-            overlapTimestamps(resources("ru-RU")),
+            listOf("1:30 (UTC-04:00, America/New_York)", "1:30 (UTC-05:00, America/New_York)"),
+            russian.map { it.removePrefix("0") },
         )
     }
 

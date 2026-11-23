@@ -3462,11 +3462,7 @@ class LibraryAccessibilityRouteTest {
 
         fun dismissDialogWithSystemBack(cancelDescription: String) {
             val cancel = compose.onNodeWithContentDescription(cancelDescription)
-            // A hidden IME can make closeKeyboard a no-op without entering keyboard mode.
-            keyboard.awaitWindowFocus(cancel)
-            keyboard.closeKeyboard(cancel)
-            cancel.performSemanticsAction(SemanticsActions.RequestFocus).awaitKeyboardFocus()
-            keyboard.sendKey(cancel, KeyEvent.KEYCODE_BACK)
+            keyboard.dismissDialogWithBack(cancel)
             compose.waitUntil(5_000) {
                 compose.onAllNodes(hasContentDescription(cancelDescription)).fetchSemanticsNodes().isEmpty()
             }

@@ -419,16 +419,23 @@ class PrimaryExecutionJourneyTest {
             f.launch()
             f.applyAppearance(PrimaryWorkflowAppearance.RussianMaximum)
 
-            fun awaitExpanded() {
+            fun awaitExpanded(expectedState: ActiveSequenceState) {
                 f.await {
                     val sessions = f.host().expandedLiveSequenceRouteSessions
-                    val controller = sessions.activeSession?.controller
-                    controller != null && controller.state.value.confirmedSequence != null
+                    val state =
+                        sessions.activeSession
+                            ?.controller
+                            ?.state
+                            ?.value
+                    state != null && !state.commandInFlight && state.confirmedSequence?.state == expectedState
                 }
             }
 
-            fun expandedAction(id: Int) {
-                awaitExpanded()
+            fun expandedAction(
+                id: Int,
+                expectedState: ActiveSequenceState,
+            ) {
+                awaitExpanded(expectedState)
                 compose.onLazyNode(hasText(f.text(id)) and hasClickAction()).assertIsDisplayed()
                 f.invoke(id)
             }
@@ -441,12 +448,12 @@ class PrimaryExecutionJourneyTest {
             val identity = f.text(R.string.daily_current_occurrence, 1, currentName)
             compose.onNodeWithContentDescription(identity).assertTextFullyVisible()
             f.expand()
-            awaitExpanded()
+            awaitExpanded(ActiveSequenceState.RUNNING_CURRENT)
             val stopwatch = f.text(R.string.expanded_sequence_stopwatch_elapsed, "").trim()
             val timing = compose.onLazyNode(hasText(stopwatch, substring = true)).assertTextFullyVisible()
             val renderedTiming = timing.layoutInput.text
             assertTrue(renderedTiming.any(Char::isDigit))
-            expandedAction(R.string.expanded_sequence_pause)
+            expandedAction(R.string.expanded_sequence_pause, ActiveSequenceState.RUNNING_CURRENT)
             f.await {
                 (f.store.live.getActiveRuntime() as? ActiveSequenceRuntime)?.let(
                     ActiveSequenceStateResolver::resolve,
@@ -462,8 +469,8 @@ class PrimaryExecutionJourneyTest {
                     .sequenceExecutionId,
             )
             f.expand()
-            expandedAction(R.string.expanded_sequence_resume)
-            expandedAction(R.string.expanded_sequence_complete)
+            expandedAction(R.string.expanded_sequence_resume, ActiveSequenceState.PAUSED_CURRENT)
+            expandedAction(R.string.expanded_sequence_complete, ActiveSequenceState.RUNNING_CURRENT)
             f.await {
                 (f.store.live.getActiveRuntime() as? ActiveSequenceRuntime)?.let(
                     ActiveSequenceStateResolver::resolve,
@@ -475,7 +482,7 @@ class PrimaryExecutionJourneyTest {
             f.systemBack()
             f.dailyLanding()
             f.expand()
-            expandedAction(R.string.expanded_sequence_start_next)
+            expandedAction(R.string.expanded_sequence_start_next, ActiveSequenceState.WAITING_NEXT)
             f.await {
                 (f.store.live.getActiveRuntime() as? ActiveSequenceRuntime)?.let(
                     ActiveSequenceStateResolver::resolve,
@@ -486,7 +493,7 @@ class PrimaryExecutionJourneyTest {
             assertEquals(original.execution.id, second.execution.id)
             assertEquals(original.execution.snapshotId, second.execution.snapshotId)
             assertEquals(original.execution.occurrences.map { it.id }, second.execution.occurrences.map { it.id })
-            expandedAction(R.string.expanded_sequence_complete)
+            expandedAction(R.string.expanded_sequence_complete, ActiveSequenceState.RUNNING_CURRENT)
             f.awaitDailyTerminal()
             val completed = f.store.sequence(original.execution.id)
             assertEquals(SequenceExecutionStatus.COMPLETED, completed.status)

@@ -6,8 +6,10 @@ import android.content.ContextWrapper
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import android.util.Log
+import android.view.KeyEvent
 import android.view.View
 import androidx.compose.ui.platform.ViewRootForTest
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.SemanticsNodeInteraction
@@ -15,6 +17,7 @@ import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.printToString
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -169,6 +172,20 @@ class KeyboardInputFixture(
         if (hidden) return
         val view = keyboardView(target)
         onView(isRoot()).inRoot(withDecorView(sameInstance(view.rootView))).perform(closeSoftKeyboard())
+    }
+
+    /** Move focus off the editor and let IME dismissal finish before sending Back to the dialog. */
+    fun dismissDialogWithBack(target: SemanticsNodeInteraction) {
+        val view = keyboardView(target)
+        target.performSemanticsAction(SemanticsActions.RequestFocus)
+        awaitFocus(target)
+        closeKeyboard(target)
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.runOnIdle {
+                ViewCompat.getRootWindowInsets(view)?.isVisible(WindowInsetsCompat.Type.ime()) == false
+            }
+        }
+        sendKey(target, KeyEvent.KEYCODE_BACK)
     }
 
     /** Routes a native key through the target's attached window, rather than global input focus. */
