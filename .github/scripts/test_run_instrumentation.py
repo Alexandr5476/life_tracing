@@ -1,3 +1,4 @@
+import base64
 import importlib.util
 import contextlib
 import hashlib
@@ -632,6 +633,74 @@ class InstrumentationEvidenceTests(unittest.TestCase):
                 self.assertEqual(hashes[relative], hashlib.sha256(content).hexdigest())
             self.assertFalse((evidence / unrelated.relative_to(root)).exists())
             self.assertFalse((evidence / other_api.relative_to(root)).exists())
+
+    def test_missing_native_captures_are_recovered_from_verified_logcat_frames(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, suite = self.write_inventory(root, "app", 35)
+            failure = ET.SubElement(suite.find("testcase"), "failure")
+            captures = {
+                "case_log": b"x" * 1024 + "Клавиатура\n".encode(),
+                "raw_log": b"y" * 1024 + b"input dispatcher\n",
+                "exported": b"already exported",
+                "incomplete": b"z" * 1024 + b"missing final frame",
+                "damaged": b"checksum mismatch",
+            }
+            names = {}
+            messages = []
+            for index, (key, content) in enumerate(captures.items(), 1):
+                name = f"capture-00000000-0000-0000-0000-{index:012d}.txt"
+                names[key] = name
+                messages.append(
+                    f"Full diagnostic artifact: /sdcard/additional_test_output/native-window-diagnostics/{name}, "
+                    f"bytes={len(content)}, sha256={hashlib.sha256(content).hexdigest()}"
+                )
+            failure.set("message", messages[0])
+            failure.text = "\n".join(messages)
+            self.save_report(source, suite)
+            original_report = source.read_bytes()
+
+            def frames(capture, content):
+                chunks = [content[start:start + 1024] for start in range(0, len(content), 1024)]
+                return [
+                    f"11-23 02:43:37.936  2279  2333 E NativeWindowDiagnostics: NDIAG1 {capture} "
+                    f"{index}/{len(chunks)} {base64.b64encode(chunk).decode('ascii')}\n".encode()
+                    for index, chunk in enumerate(chunks, 1)
+                ]
+
+            case = frames(111, captures["case_log"])
+            logs = {
+                "logcat-FailingRouteTest-nativeWindow.txt": b"".join([
+                    case[1], case[1], case[0], *frames(113, captures["exported"]),
+                    frames(114, captures["incomplete"])[0], *frames(115, b"X" * len(captures["damaged"])),
+                ]),
+                "adb.021.exe.adb.exe.fail.txt": b"\xff raw logcat\n" + b"".join(frames(112, captures["raw_log"])),
+                "utp.0.log": b"cmd: Can't find service: activity\n",
+                "test-result.pb": b"\x00\xfforiginal binary result",
+            }
+            for name, content in logs.items():
+                source.with_name(name).write_bytes(content)
+            exported = (root / "app/build/intermediates/managed_device_android_test_additional_output/debugAndroidTest"
+                        / "pixel2Api35DebugAndroidTest/native-window-diagnostics" / names["exported"])
+            exported.parent.mkdir(parents=True)
+            exported.write_bytes(captures["exported"])
+
+            evidence = root / "evidence"
+            with self.assertRaisesRegex(ValueError, "mandatory"):
+                ci.collect_reports(root, evidence, "app", 35)
+
+            manifest = json.loads((evidence / "app-artifacts.json").read_text(encoding="utf-8"))
+            self.assertEqual((evidence / source.relative_to(root)).read_bytes(), original_report)
+            for name, content in logs.items():
+                self.assertEqual((evidence / source.with_name(name).relative_to(root)).read_bytes(), content)
+            retained = manifest["diagnostic_artifacts"]
+            for key in ("case_log", "raw_log", "exported"):
+                matching = [item for item in retained if Path(item["path"]).name == names[key]]
+                self.assertEqual(len(matching), 1, key)
+                self.assertEqual((evidence / matching[0]["path"]).read_bytes(), captures[key])
+                self.assertEqual(matching[0]["sha256"], hashlib.sha256(captures[key]).hexdigest())
+            self.assertTrue(all(Path(item["path"]).name not in (names["incomplete"], names["damaged"])
+                                for item in retained))
 
     def test_all_original_xml_and_runner_evidence_survive_malformed_first_report(self):
         with tempfile.TemporaryDirectory() as temporary:
