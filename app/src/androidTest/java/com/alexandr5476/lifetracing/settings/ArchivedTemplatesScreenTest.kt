@@ -22,8 +22,11 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.click
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -41,8 +44,12 @@ import com.alexandr5476.lifetracing.domain.LibraryTemplateId
 import com.alexandr5476.lifetracing.domain.LibraryTrackable
 import com.alexandr5476.lifetracing.domain.SequenceTemplateId
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
+import com.alexandr5476.lifetracing.ui.PrimaryWorkflowAppearance
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.LifeTracingAppearance
+import com.alexandr5476.lifetracing.ui.assertTextFitsLayout
+import com.alexandr5476.lifetracing.ui.assertTextFullyVisible
+import com.alexandr5476.lifetracing.ui.renderedTextLayout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -366,6 +373,77 @@ class ArchivedTemplatesScreenTest {
         }
         assertEquals(2, retries)
         assertEquals(listOf(activity, activity), requests)
+    }
+
+    @Test
+    fun longDuplicateRowsAndRestoreFailureStayReadableAtRussianMaximumScale() {
+        val configuration = PrimaryWorkflowAppearance.RussianMaximum
+        val context = configuration.resourcesContext(compose.activity)
+        val first = row(LibraryTemplateId.Activity(ActivityTemplateId("duplicate-first"))).copy(shortComment = null)
+        val second = row(LibraryTemplateId.Activity(ActivityTemplateId("duplicate-second"))).copy(shortComment = null)
+        val state = ArchivedTemplatesState(listOf(first, second), loading = false, failedRestore = second.id)
+        val requests = mutableListOf<LibraryTemplateId>()
+        var retries = 0
+        var back = 0
+        compose.setContent {
+            configuration.Content {
+                ArchivedTemplatesScreen(
+                    state,
+                    requests::add,
+                    onReload = {},
+                    onRetryRestore = { retries++ },
+                    onBack = { back++ },
+                    readCurrent = { state },
+                )
+            }
+        }
+        listOf(first, second).forEach { archived ->
+            val key = archived.id.archivedRowKey()
+            scrollTo("archived-details-$key")
+            val target = targetLabel(context, archived, includeId = true)
+            val name =
+                compose.onNode(
+                    hasText(archived.name) and hasAnyAncestor(hasTestTag("archived-details-$key")),
+                    useUnmergedTree = true,
+                )
+            name.assertIsDisplayed().renderedTextLayout().assertTextFitsLayout()
+            compose
+                .onNodeWithText(
+                    context.getString(R.string.archived_templates_id, archived.id.value),
+                    useUnmergedTree = true,
+                ).assertTextFullyVisible()
+            scrollTo("archived-restore-$key")
+            assertDescription(
+                "archived-restore-$key",
+                context.getString(R.string.archived_templates_restore_target, target),
+            )
+        }
+        val failedTarget = targetLabel(context, second, includeId = true)
+        val feedback = context.getString(R.string.archived_templates_restore_failure, failedTarget)
+        showText(feedback)
+        val statusText = compose.onNodeWithText(feedback)
+        val layout = statusText.renderedTextLayout()
+        layout.assertTextFitsLayout()
+        val statusScroll = compose.onNodeWithTag("archived-feedback-scroll").assert(hasScrollAction())
+        val range = statusScroll.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange]
+        statusScroll.performSemanticsAction(SemanticsActions.ScrollBy) { scroll -> scroll(0f, range.maxValue()) }
+        compose.waitUntil(5_000) {
+            val status = statusText.fetchSemanticsNode()
+            status.boundsInRoot.bottom + 1f >= status.positionInRoot.y + layout.getLineBottom(layout.lineCount - 1)
+        }
+        compose.runOnIdle {
+            assertTrue(requests.isEmpty())
+            assertEquals(0, retries)
+            assertEquals(0, back)
+        }
+        compose.onNodeWithTag("archived-restore-${second.id.archivedRowKey()}").assertIsDisplayed().performClick()
+        compose.onNodeWithTag(ARCHIVE_RETRY).assertIsDisplayed().performClick()
+        compose.onNodeWithTag(ARCHIVE_BACK).assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertEquals(listOf(second.id), requests)
+            assertEquals(1, retries)
+            assertEquals(1, back)
+        }
     }
 
     @Test

@@ -1,10 +1,12 @@
 package com.alexandr5476.lifetracing
 
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
-import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.unit.Density
 import androidx.test.core.app.ActivityScenario
-import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.core.app.ApplicationProvider
+import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
+import com.alexandr5476.lifetracing.runtime.RuntimeIsolationApplication
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
 import com.alexandr5476.lifetracing.ui.appearance.ThemeMode
@@ -12,6 +14,7 @@ import com.alexandr5476.lifetracing.ui.theme.AccentPaletteId
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicReference
@@ -23,7 +26,7 @@ class AppearanceProductionRootTest {
     @Test
     fun persisted_scales_reach_main_activity_daily_subtree_and_survive_recreation() =
         runBlocking {
-            val context = InstrumentationRegistry.getInstrumentation().targetContext
+            val context = ApplicationProvider.getApplicationContext<RuntimeIsolationApplication>()
             val repository = AppearancePreferencesRepository(context)
             val original = repository.preferences.first()
             val expected =
@@ -36,16 +39,25 @@ class AppearanceProductionRootTest {
             try {
                 writeAppearance(repository, expected)
                 assertEquals(expected, AppearancePreferencesRepository(context).preferences.first())
-                ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-                    val title = context.getString(R.string.daily_title)
-                    val parent = systemDensity(scenario)
-                    awaitRootDensity(title, parent.density * 1.1f, parent.fontScale * 1.25f)
-                    scenario.recreate()
-                    val recreatedParent = systemDensity(scenario)
-                    awaitRootDensity(title, recreatedParent.density * 1.1f, recreatedParent.fontScale * 1.25f)
-                    repository.setInterfaceScalePercent(100)
-                    repository.setTextScalePercent(100)
-                    awaitRootDensity(title, recreatedParent.density, recreatedParent.fontScale)
+                context.withDisposableRuntime { runtime ->
+                    RuntimeRecoveryStore(context, runtime.name).use { empty ->
+                        assertNull(empty.live.getActiveSession())
+                        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                            val parent = systemDensity(scenario)
+                            awaitRootDensity(parent.density * 1.1f, parent.fontScale * 1.25f)
+                            scenario.recreate()
+                            val recreatedParent = systemDensity(scenario)
+                            awaitRootDensity(recreatedParent.density * 1.1f, recreatedParent.fontScale * 1.25f)
+                            repository.setInterfaceScalePercent(100)
+                            repository.setTextScalePercent(100)
+                            awaitRootDensity(recreatedParent.density, recreatedParent.fontScale)
+                        }
+                    }
+                    RuntimeRecoveryStore(context, runtime.name).use { reopened ->
+                        assertNull(reopened.live.getActiveSession())
+                        assertNull(reopened.live.getActiveRuntime())
+                        assertEquals(0L to 0L, reopened.executionCounts())
+                    }
                 }
             } finally {
                 writeAppearance(repository, original)
@@ -66,14 +78,13 @@ class AppearanceProductionRootTest {
     }
 
     private fun awaitRootDensity(
-        title: String,
         density: Float,
         fontScale: Float,
     ) {
         compose.waitUntil(timeoutMillis = 5_000) {
             val effective =
                 compose
-                    .onAllNodesWithText(title)
+                    .onAllNodesWithTag("daily-settings")
                     .fetchSemanticsNodes()
                     .singleOrNull()
                     ?.layoutInfo

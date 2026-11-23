@@ -32,6 +32,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -42,7 +43,6 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import com.alexandr5476.lifetracing.R
-import com.alexandr5476.lifetracing.domain.ExactValue
 import com.alexandr5476.lifetracing.domain.GlobalStatistics
 import com.alexandr5476.lifetracing.domain.StatisticsPeriod
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesId
@@ -53,9 +53,6 @@ import com.alexandr5476.lifetracing.domain.StatisticsSeriesSummary
 import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
 import com.alexandr5476.lifetracing.ui.theme.spacing
 import java.io.Serializable
-import java.math.BigDecimal
-import java.math.RoundingMode
-import java.time.Duration
 
 @Composable
 internal fun StatisticsRoute(
@@ -281,6 +278,7 @@ private fun OverviewStatus(
 
 @Composable
 private fun GlobalMetrics(global: GlobalStatistics) {
+    val locale = LocalConfiguration.current.locales[0]
     Card(Modifier.fillMaxWidth().testTag("statistics-global")) {
         Column(
             Modifier.padding(MaterialTheme.spacing.medium),
@@ -291,15 +289,18 @@ private fun GlobalMetrics(global: GlobalStatistics) {
                 Modifier.semantics { heading() },
                 style = MaterialTheme.typography.titleMedium,
             )
-            Metric(R.string.statistics_tracked_time, duration(global.totalTrackedDuration))
-            Metric(R.string.statistics_top_level_executions, global.topLevelExecutionCount.toString())
-            Metric(R.string.statistics_active_days, global.activeDayCount.toString())
+            Metric(R.string.statistics_tracked_time, statisticsDuration(global.totalTrackedDuration, locale))
+            Metric(R.string.statistics_top_level_executions, statisticsCount(global.topLevelExecutionCount, locale))
+            Metric(R.string.statistics_active_days, statisticsCount(global.activeDayCount, locale))
             Metric(
                 R.string.statistics_average_per_active_day,
-                global.averageTrackedMillisecondsPerActiveDay?.let(::averageDuration)
+                global.averageTrackedMillisecondsPerActiveDay?.let { statisticsAverageDuration(it, locale) }
                     ?: stringResource(R.string.statistics_unavailable),
             )
-            Metric(R.string.statistics_sequence_pause_idle, duration(global.totalSequencePauseIdleDuration))
+            Metric(
+                R.string.statistics_sequence_pause_idle,
+                statisticsDuration(global.totalSequencePauseIdleDuration, locale),
+            )
         }
     }
 }
@@ -315,6 +316,7 @@ private fun SeriesRow(
     onOpenSeries: (StatisticsSeriesId, StatisticsPeriod) -> Unit,
 ) {
     val series = summary.series
+    val locale = LocalConfiguration.current.locales[0]
     val kind =
         when (series.kind) {
             StatisticsSeriesKind.ACTIVITY -> R.string.statistics_kind_activity
@@ -336,21 +338,21 @@ private fun SeriesRow(
             Text(title, style = MaterialTheme.typography.titleSmall)
             if (!oneOff) Text(stringResource(kind))
             Text(stringResource(sourceLabel(series.sourceState)))
-            Metric(R.string.statistics_executions, summary.executionCount.toString())
+            Metric(R.string.statistics_executions, statisticsCount(summary.executionCount, locale))
             Metric(
                 R.string.statistics_duration_total,
                 if (summary.durationSampleCount == 0L) {
                     stringResource(R.string.statistics_no_duration_samples)
                 } else {
-                    duration(summary.totalDuration)
+                    statisticsDuration(summary.totalDuration, locale)
                 },
             )
             Metric(
                 R.string.statistics_duration_average,
-                summary.averageDurationMilliseconds?.let(::averageDuration)
+                summary.averageDurationMilliseconds?.let { statisticsAverageDuration(it, locale) }
                     ?: stringResource(R.string.statistics_unavailable),
             )
-            Metric(R.string.statistics_active_days, summary.activeDayCount.toString())
+            Metric(R.string.statistics_active_days, statisticsCount(summary.activeDayCount, locale))
         }
     }
     if (oneOff) {
@@ -386,17 +388,3 @@ private fun Metric(
 ) {
     Text(stringResource(label, value))
 }
-
-private fun duration(value: Duration): String =
-    "%d:%02d:%02d".format(
-        value.seconds / 3600,
-        value.seconds / 60 % 60,
-        value.seconds % 60,
-    )
-
-private fun averageDuration(value: ExactValue): String =
-    duration(
-        Duration.ofMillis(
-            BigDecimal(value.numerator).divide(BigDecimal(value.denominator), 0, RoundingMode.HALF_UP).longValueExact(),
-        ),
-    )

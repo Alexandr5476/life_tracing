@@ -32,6 +32,7 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -202,21 +203,27 @@ internal fun navigate(
 
 @Composable
 internal fun statisticsPeriodDescription(period: StatisticsPeriod): String {
+    val locale = LocalConfiguration.current.locales[0]
     val kind = stringResource(StatisticsPeriodKind.from(period).label)
     val range = runCatching { period.dateRangeOrNull() }.getOrNull()
     return when (period) {
         StatisticsPeriod.AllTime -> stringResource(R.string.statistics_period_unbounded, kind)
-        is StatisticsPeriod.Day -> stringResource(R.string.statistics_period_single_date, kind, period.date.toString())
+        is StatisticsPeriod.Day ->
+            stringResource(R.string.statistics_period_single_date, kind, statisticsPeriodDate(period.date, locale))
         else -> {
             if (range == null && period is StatisticsPeriod.Week) {
-                stringResource(R.string.statistics_period_single_date, kind, period.weekStart.toString())
+                stringResource(
+                    R.string.statistics_period_single_date,
+                    kind,
+                    statisticsPeriodDate(period.weekStart, locale),
+                )
             } else {
                 requireNotNull(range)
                 stringResource(
                     R.string.statistics_period_date_range,
                     kind,
-                    range.startDate.toString(),
-                    range.endDateInclusive.toString(),
+                    statisticsPeriodDate(range.startDate, locale),
+                    statisticsPeriodDate(range.endDateInclusive, locale),
                 )
             }
         }

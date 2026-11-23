@@ -3,7 +3,9 @@ package com.alexandr5476.lifetracing.statistics
 import android.content.res.Configuration
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.referentialEqualityPolicy
@@ -20,8 +22,13 @@ import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
@@ -61,8 +68,10 @@ import com.alexandr5476.lifetracing.openStatisticsSeriesDetail
 import com.alexandr5476.lifetracing.ownsStatisticsSeriesDetail
 import com.alexandr5476.lifetracing.removeStatistics
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
+import com.alexandr5476.lifetracing.ui.PrimaryWorkflowAppearance
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.LifeTracingAppearance
+import com.alexandr5476.lifetracing.ui.assertTextFullyVisible
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -76,16 +85,170 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import java.text.DecimalFormatSymbols
+import java.text.NumberFormat
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import java.util.Locale
 
 class StatisticsScreenPresentationTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
     @get:Rule val keyboard = KeyboardInputFixture(compose)
+
+    @Test
+    @Suppress("LongMethod")
+    fun overviewKeepsAppliedPeriodAndExactMetricsReadableAcrossAppearances() {
+        val period = StatisticsPeriod.Custom(LocalDate.parse("2027-11-07"), LocalDate.parse("2027-11-13"))
+        val reads = mutableListOf<StatisticsPeriod>()
+        val opened = mutableListOf<Pair<StatisticsSeriesId, StatisticsPeriod>>()
+        val first = CompletableDeferred<StatisticsOverview>()
+        val duration = Duration.ofHours(12_345).plusMillis(125)
+        val count = 1_234_567L
+        val name = "A long shared training name for two independent series"
+        val archived =
+            seriesRows[2].let {
+                it.copy(
+                    series = it.series.copy(displayName = name),
+                    executionCount = count,
+                )
+            }
+        val sequence =
+            seriesRows[1].let {
+                it.copy(
+                    series =
+                        it.series.copy(
+                            displayName = name,
+                            sourceState = StatisticsSeriesSourceState.NO_CURRENT_SOURCE,
+                        ),
+                    totalDuration = duration,
+                    averageDurationMilliseconds = ExactValue.of(duration.toMillis(), 1),
+                )
+            }
+        val system =
+            seriesRows
+                .single { it.series.kind == StatisticsSeriesKind.ONE_OFF_BUCKET }
+                .copy(durationSampleCount = 1, averageDurationMilliseconds = ExactValue.of(0, 1))
+        val populated =
+            overview(listOf(archived, sequence, system)).let {
+                it.copy(global = it.global.copy(totalTrackedDuration = duration, topLevelExecutionCount = count + 2))
+            }
+        val appearance = mutableStateOf(PrimaryWorkflowAppearance.EnglishMinimum)
+        val scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob())
+        val controller =
+            StatisticsController(scope, period) {
+                reads += it
+                when (reads.size) {
+                    1 -> first.await()
+                    2 -> overview(emptyList())
+                    else -> populated
+                }
+            }
+        try {
+            compose.setContent {
+                appearance.value.Content {
+                    StatisticsRoute(
+                        controller,
+                        onOpenSeries = { id, selected -> opened += id to selected },
+                        onBack = {},
+                    )
+                }
+            }
+            overviewNode("statistics-loading").assertIsDisplayed()
+            compose.runOnIdle { first.completeExceptionally(IllegalStateException("offline")) }
+            overviewNode("statistics-retry").assertIsEnabled().performClick()
+            overviewNode("statistics-empty").assertIsDisplayed()
+            overviewNode("statistics-refresh").performClick()
+
+            val list = compose.onNodeWithTag("statistics-list")
+            for (mode in PrimaryWorkflowAppearance.entries) {
+                compose.runOnIdle { appearance.value = mode }
+                val resources = mode.resourcesContext(compose.activity)
+                val locale = resources.resources.configuration.locales[0]
+                val date = DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(locale)
+                val description =
+                    resources.getString(
+                        R.string.statistics_period_date_range,
+                        resources.getString(R.string.statistics_period_custom),
+                        date.format(period.startDate),
+                        date.format(period.endDateInclusive),
+                    )
+                list.performScrollToKey(StatisticsOverviewItem.PERIOD)
+                compose
+                    .onNodeWithText(
+                        resources.getString(R.string.statistics_period_applied, description),
+                        useUnmergedTree = true,
+                    ).assertTextFullyVisible()
+                overviewNode("statistics-custom-start").assertTextContains("2027-11-07")
+                overviewNode("statistics-custom-apply").assertIsEnabled()
+                overviewNode("statistics-period-custom").assertIsSelected()
+
+                list.performScrollToKey(StatisticsOverviewItem.GLOBAL)
+                val separator = DecimalFormatSymbols.getInstance(locale).decimalSeparator
+                val integers = NumberFormat.getIntegerInstance(locale)
+                val metrics =
+                    mapOf(
+                        R.string.statistics_tracked_time to "12345:00:00${separator}125",
+                        R.string.statistics_top_level_executions to integers.format(count + 2),
+                    )
+                metrics.forEach { (label, value) ->
+                    compose
+                        .onNodeWithText(
+                            resources.getString(label, value),
+                            useUnmergedTree = true,
+                        ).assertTextFullyVisible()
+                }
+                list.performScrollToKey(StatisticsSeriesItemKey(archived.series.id))
+                compose
+                    .onNodeWithText(
+                        resources.getString(R.string.statistics_detail_duplicate_name, name, archived.series.id.value),
+                        useUnmergedTree = true,
+                    ).assertTextFullyVisible()
+                compose
+                    .onNodeWithText(
+                        resources.getString(R.string.statistics_source_archived),
+                        useUnmergedTree = true,
+                    ).assertTextFullyVisible()
+                val missing = resources.getString(R.string.statistics_no_duration_samples)
+                val durationLabel = resources.getString(R.string.statistics_duration_total, missing)
+                compose
+                    .onNode(
+                        hasText(durationLabel) and
+                            hasAnyAncestor(hasTestTag("statistics-series-${archived.series.id.value}")),
+                        useUnmergedTree = true,
+                    ).assertTextFullyVisible()
+                list.performScrollToKey(StatisticsSeriesItemKey(sequence.series.id))
+                compose
+                    .onNodeWithText(resources.getString(R.string.statistics_source_missing), useUnmergedTree = true)
+                    .assertTextFullyVisible()
+                series("system").assertHasNoClickAction()
+                compose
+                    .onNodeWithText(
+                        resources.getString(R.string.statistics_duration_total, "0:00:00"),
+                        useUnmergedTree = true,
+                    ).assertTextFullyVisible()
+            }
+            compose.runOnIdle {
+                assertEquals(List(3) { period }, reads)
+                assertTrue(opened.isEmpty())
+            }
+            series(archived.series.id.value).performClick()
+            series(sequence.series.id.value).performClick()
+            compose.runOnIdle {
+                assertEquals(listOf(archived.series.id to period, sequence.series.id to period), opened)
+                assertEquals(List(3) { period }, reads)
+            }
+            overviewNode("statistics-period-all_time").performClick()
+            overviewNode("statistics-period-all_time").assertIsSelected()
+            compose.runOnIdle { assertEquals(List(3) { period } + StatisticsPeriod.AllTime, reads) }
+        } finally {
+            scope.cancel()
+        }
+    }
 
     @Test
     fun existingCustomRangeIsVisibleAndCanBeReapplied() {
@@ -551,9 +714,9 @@ class StatisticsScreenPresentationTest {
                 "statistics-detail-retry",
             ).map(::nativeAction)
 
-        fun setContent() =
+        fun setContent(appearance: State<PrimaryWorkflowAppearance>? = null) =
             compose.setContent {
-                LifeTracingTheme {
+                val navigation: @Composable () -> Unit = {
                     NavDisplay(
                         backStack = stack,
                         onBack = {
@@ -596,6 +759,7 @@ class StatisticsScreenPresentationTest {
                             },
                     )
                 }
+                if (appearance == null) LifeTracingTheme(content = navigation) else appearance.value.Content(navigation)
             }
     }
 
@@ -756,10 +920,13 @@ class StatisticsScreenPresentationTest {
     @Test
     fun returnFromDetailRestoresKeyboardFocusToTheExactDuplicateNameRow() {
         val routes = RouteFixture().apply { failOverview = false }
-        routes.setContent()
+        val appearance = mutableStateOf(PrimaryWorkflowAppearance.EnglishMinimum)
+        routes.setContent(appearance)
         keyboard.enter()
         series("sequence").performSemanticsAction(SemanticsActions.RequestFocus)
         press(Key.Enter)
+        compose.onNodeWithTag("statistics-detail-back").assertExists()
+        compose.runOnIdle { appearance.value = PrimaryWorkflowAppearance.RussianMaximum }
         compose.onNodeWithTag("statistics-detail-back").performClick()
         compose.onNodeWithTag("statistics-series-sequence").assertIsFocused()
         compose.runOnIdle {
@@ -796,19 +963,23 @@ class StatisticsScreenPresentationTest {
                 LifeTracingTheme { StatisticsRoute(controller) { backValue = current } }
             }
             val month = compose.activity.getString(R.string.statistics_period_month)
+            val date =
+                DateTimeFormatter
+                    .ofLocalizedDate(FormatStyle.MEDIUM)
+                    .withLocale(compose.activity.resources.configuration.locales[0])
             val august =
                 compose.activity.getString(
                     R.string.statistics_period_date_range,
                     month,
-                    "2026-08-01",
-                    "2026-08-31",
+                    date.format(LocalDate.of(2026, 8, 1)),
+                    date.format(LocalDate.of(2026, 8, 31)),
                 )
             val september =
                 compose.activity.getString(
                     R.string.statistics_period_date_range,
                     month,
-                    "2026-09-01",
-                    "2026-09-30",
+                    date.format(LocalDate.of(2026, 9, 1)),
+                    date.format(LocalDate.of(2026, 9, 30)),
                 )
             val original = status("statistics-content", august).fetchSemanticsNode().id
             compose.runOnIdle { unrelated.value = 1 }

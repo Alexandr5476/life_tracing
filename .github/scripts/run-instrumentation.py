@@ -1,6 +1,8 @@
 """Run full GMD suites and independent startup sequentially; retain JUnit and native diagnostics."""
 
 import argparse
+import base64
+import binascii
 import ctypes
 from datetime import datetime, timezone
 import hashlib
@@ -830,6 +832,72 @@ def capture_system_ui_diagnostics(directory, module, api, *, native_crash=False)
     return dict(path=manifest.relative_to(directory).as_posix(), sha256=hashlib.sha256(content).hexdigest())
 
 
+NATIVE_WINDOW_ARTIFACT = re.compile(
+    r"Full diagnostic artifact: \S*/native-window-diagnostics/"
+    r"(capture-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.txt), "
+    r"bytes=(\d{1,9}), sha256=([0-9a-f]{64})\b"
+)
+NATIVE_WINDOW_FRAME = re.compile(
+    rb"\bNativeWindowDiagnostics:\s+NDIAG1 (\d{1,19}) (\d{1,7})/(\d{1,7}) ([A-Za-z0-9+/=]{1,1368})\s*$"
+)
+NATIVE_WINDOW_FRAME_BYTES = 1024
+
+
+def read_native_window_captures(logcat, expected_frames):
+    pending = {}
+    with logcat.open("rb") as stream:
+        for line in stream:
+            match = NATIVE_WINDOW_FRAME.search(line)
+            if match is None:
+                continue
+            capture, index, total, payload = match.groups()
+            index, total = int(index), int(total)
+            if total not in expected_frames or not 1 <= index <= total:
+                continue
+            frames = pending.setdefault((capture, total), {})
+            frames.setdefault(index, payload)
+            if len(frames) != total:
+                continue
+            del pending[capture, total]
+            try:
+                content = b"".join(base64.b64decode(frames[i], validate=True) for i in range(1, total + 1))
+            except binascii.Error:
+                continue
+            yield content
+
+
+def recover_native_window_diagnostics(source, directory, module, trees, diagnostics):
+    """Recover missing Android artifacts when UTP loses its device-side export."""
+    exported = {(Path(item["path"]).name, item["sha256"]) for item in diagnostics
+                if Path(item["path"]).parent.name == "native-window-diagnostics"}
+    missing = {}
+    for tree in trees:
+        for tag in ("failure", "error"):
+            for failure in tree.iter(tag):
+                receipt = failure.get("message", "") + "\n" + (failure.text or "")
+                for name, size, digest in NATIVE_WINDOW_ARTIFACT.findall(receipt):
+                    if (name, digest) not in exported:
+                        missing.setdefault((int(size), digest), set()).add(name)
+    if not missing:
+        return
+
+    width = NATIVE_WINDOW_FRAME_BYTES
+    expected_frames = {max(1, (size + width - 1) // width) for size, _ in missing}
+    logcats = sorted(source.glob("logcat-*.txt")) + sorted(source.glob("adb.*.txt"))
+    target = directory / f"{module}-recovered-native-window-diagnostics"
+    for logcat in logcats:
+        for content in read_native_window_captures(logcat, expected_frames):
+            digest = hashlib.sha256(content).hexdigest()
+            names = missing.pop((len(content), digest), ())
+            for name in sorted(names):
+                target.mkdir(parents=True, exist_ok=True)
+                path = target / name
+                path.write_bytes(content)
+                yield dict(path=path.relative_to(directory).as_posix(), sha256=digest)
+            if not missing:
+                return
+
+
 def collect_reports(repo, directory, module, api):
     reports, counts, observed = [], dict(total=0, failures=0, errors=0, skipped=0), set()
     # Pinned independently of discovery/results: disappearing tests cannot shrink the gate.
@@ -853,11 +921,14 @@ def collect_reports(repo, directory, module, api):
         diagnostic_files.append(merged)
     reports = [retain_artifact(repo, directory, module, path) for path in report_files]
     diagnostics = [retain_artifact(repo, directory, module, path) for path in diagnostic_files]
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / f"{module}-artifacts.json").write_text(
-        json.dumps(dict(reports=reports, diagnostic_artifacts=diagnostics), indent=2) + "\n", encoding="utf-8")
-    for path in report_files:
-        tree = ET.parse(path)
+    try:
+        trees = [ET.parse(path) for path in report_files]
+        diagnostics.extend(recover_native_window_diagnostics(source, directory, module, trees, diagnostics))
+    finally:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{module}-artifacts.json").write_text(
+            json.dumps(dict(reports=reports, diagnostic_artifacts=diagnostics), indent=2) + "\n", encoding="utf-8")
+    for tree in trees:
         if tree.getroot().tag not in ("testsuite", "testsuites"):
             raise ValueError(f"{module}: malformed JUnit root")
         cases = list(tree.iter("testcase"))

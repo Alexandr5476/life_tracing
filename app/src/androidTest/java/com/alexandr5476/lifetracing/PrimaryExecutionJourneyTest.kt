@@ -117,8 +117,11 @@ import com.alexandr5476.lifetracing.plan.PlanExecutionController
 import com.alexandr5476.lifetracing.plan.PlanExecutionOrigin
 import com.alexandr5476.lifetracing.runtime.RuntimeIsolationApplication
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
+import com.alexandr5476.lifetracing.ui.PrimaryWorkflowAppearance
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferencesRepository
+import com.alexandr5476.lifetracing.ui.appearance.ThemeMode
+import com.alexandr5476.lifetracing.ui.assertTextFullyVisible
 import com.alexandr5476.lifetracing.ui.onLazyNode
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -414,11 +417,43 @@ class PrimaryExecutionJourneyTest {
             val template = f.sequenceTemplate()
             f.store.library.pin(LibraryTemplateId.Sequence(template.id))
             f.launch()
+            f.applyAppearance(PrimaryWorkflowAppearance.RussianMaximum)
+
+            fun awaitExpanded(expectedState: ActiveSequenceState) {
+                f.await {
+                    val sessions = f.host().expandedLiveSequenceRouteSessions
+                    val state =
+                        sessions.activeSession
+                            ?.controller
+                            ?.state
+                            ?.value
+                    state != null && !state.commandInFlight && state.confirmedSequence?.state == expectedState
+                }
+            }
+
+            fun expandedAction(
+                id: Int,
+                expectedState: ActiveSequenceState,
+            ) {
+                awaitExpanded(expectedState)
+                compose.onLazyNode(hasText(f.text(id)) and hasClickAction()).assertIsDisplayed()
+                f.invoke(id)
+            }
+
             f.selectPinned(template.name)
             f.awaitDailyRuntime()
             val original = f.store.live.getActiveRuntime() as ActiveSequenceRuntime
+            val current = requireNotNull(original.currentChild)
+            val currentName = original.activitySnapshots.getValue(current.snapshotId).name
+            val identity = f.text(R.string.daily_current_occurrence, 1, currentName)
+            compose.onNodeWithContentDescription(identity).assertTextFullyVisible()
             f.expand()
-            f.invoke(R.string.expanded_sequence_pause)
+            awaitExpanded(ActiveSequenceState.RUNNING_CURRENT)
+            val stopwatch = f.text(R.string.expanded_sequence_stopwatch_elapsed, "").trim()
+            val timing = compose.onLazyNode(hasText(stopwatch, substring = true)).assertTextFullyVisible()
+            val renderedTiming = timing.layoutInput.text
+            assertTrue(renderedTiming.any(Char::isDigit))
+            expandedAction(R.string.expanded_sequence_pause, ActiveSequenceState.RUNNING_CURRENT)
             f.await {
                 (f.store.live.getActiveRuntime() as? ActiveSequenceRuntime)?.let(
                     ActiveSequenceStateResolver::resolve,
@@ -434,8 +469,8 @@ class PrimaryExecutionJourneyTest {
                     .sequenceExecutionId,
             )
             f.expand()
-            f.invoke(R.string.expanded_sequence_resume)
-            f.invoke(R.string.expanded_sequence_complete)
+            expandedAction(R.string.expanded_sequence_resume, ActiveSequenceState.PAUSED_CURRENT)
+            expandedAction(R.string.expanded_sequence_complete, ActiveSequenceState.RUNNING_CURRENT)
             f.await {
                 (f.store.live.getActiveRuntime() as? ActiveSequenceRuntime)?.let(
                     ActiveSequenceStateResolver::resolve,
@@ -447,7 +482,7 @@ class PrimaryExecutionJourneyTest {
             f.systemBack()
             f.dailyLanding()
             f.expand()
-            f.invoke(R.string.expanded_sequence_start_next)
+            expandedAction(R.string.expanded_sequence_start_next, ActiveSequenceState.WAITING_NEXT)
             f.await {
                 (f.store.live.getActiveRuntime() as? ActiveSequenceRuntime)?.let(
                     ActiveSequenceStateResolver::resolve,
@@ -458,7 +493,7 @@ class PrimaryExecutionJourneyTest {
             assertEquals(original.execution.id, second.execution.id)
             assertEquals(original.execution.snapshotId, second.execution.snapshotId)
             assertEquals(original.execution.occurrences.map { it.id }, second.execution.occurrences.map { it.id })
-            f.invoke(R.string.expanded_sequence_complete)
+            expandedAction(R.string.expanded_sequence_complete, ActiveSequenceState.RUNNING_CURRENT)
             f.awaitDailyTerminal()
             val completed = f.store.sequence(original.execution.id)
             assertEquals(SequenceExecutionStatus.COMPLETED, completed.status)
@@ -1008,7 +1043,65 @@ class PrimaryExecutionJourneyTest {
     fun russianLargeFontProductionActivityJourneyKeepsActionsReachable() = scaledActivityJourney("ru", 2f, 120, 130)
 
     @Test
-    fun englishReducedScaleProductionActivityJourneyKeepsNativeTargets() = scaledActivityJourney("en", 1f, 90, 90)
+    fun englishReducedScaleProductionActivityJourneyKeepsNativeTargets() =
+        scaledActivityJourney("en", 1f, 90, 90, themeMode = ThemeMode.LIGHT)
+
+    @Test
+    fun russianDarkSlateReachesPreflightCancelAndLiveTimerWithoutUnrelatedWrites() =
+        journey { f ->
+            val preflight = f.activityTemplate(countdown = Duration.ofHours(1))
+            val timer =
+                f.store.authoring.createActivityTemplate(
+                    ActivityTemplateDraft(
+                        "Длинное название таймера для вечерней тренировки",
+                        null,
+                        TimeTrackingMode.TIMER,
+                        Duration.ofHours(1),
+                    ),
+                    createdAt = f.seedTime,
+                )
+            f.store.library.pin(LibraryTemplateId.Activity(preflight.id))
+            f.store.library.pin(LibraryTemplateId.Activity(timer.id))
+            val before = f.store.durableFacts()
+            f.launch()
+            f.applyAppearance(PrimaryWorkflowAppearance.RussianMaximum)
+            val empty = f.text(R.string.daily_no_completed)
+            compose.waitUntil(5_000) { compose.onAllNodesWithText(empty).fetchSemanticsNodes().size == 1 }
+            compose.onNodeWithText(empty).assertTextFullyVisible()
+            f.selectPinned(preflight.name)
+            assertRussianPreflightReachable(f)
+            f.invoke(R.string.launcher_cancel)
+            f.systemBack()
+            f.dailyLanding()
+            assertEquals(before, f.store.durableFacts())
+            f.selectPinned(timer.name)
+            f.awaitDailyRuntime()
+            compose.onNodeWithText(timer.name).assertTextFullyVisible()
+            val remaining = f.text(R.string.daily_remaining, "").trim()
+            compose.onNode(hasText(remaining, substring = true)).assertTextFullyVisible()
+            f.invoke(R.string.daily_pause)
+            f.awaitDailyRuntime()
+            compose.onNodeWithText(f.text(R.string.daily_paused)).assertTextFullyVisible()
+            f.invoke(R.string.daily_resume)
+            f.awaitDailyRuntime()
+            f.invoke(R.string.daily_finish)
+            f.awaitDailyTerminal()
+            compose.onNodeWithTag("daily-settings").performScrollTo().assertIsDisplayed()
+            assertEquals(1L to 0L, f.store.executionCounts())
+        }
+
+    private fun assertRussianPreflightReachable(f: Fixture) {
+        val text = f.text(R.string.launcher_preflight)
+        f.await {
+            val sessions = f.host().startActivityRouteSessions
+            val controller = sessions.activeSession?.controller
+            controller != null && controller.state.value.command is LauncherCommandState.Preflight
+        }
+        compose.onLazyNode(hasText(text)).assertTextFullyVisible()
+        val countdown = f.text(R.string.launcher_countdown_remaining, "").trim()
+        compose.onLazyNode(hasContentDescription(countdown, substring = true)).assertTextFullyVisible()
+        compose.onLazyNode(hasClickAction() and hasText(f.text(R.string.launcher_cancel))).assertIsDisplayed()
+    }
 
     @Test
     fun duplicateDailyPlanSelectionRetainsExactIdentityAndFrozenLinkageAfterReopen() =
@@ -1118,11 +1211,12 @@ class PrimaryExecutionJourneyTest {
         font: Float,
         interfaceScale: Int,
         textScale: Int,
+        themeMode: ThemeMode = ThemeMode.SYSTEM,
     ) = journey { f ->
         val template = f.activityTemplate()
         f.store.library.pin(LibraryTemplateId.Activity(template.id))
         f.launch()
-        f.applyAppearance(language, font, interfaceScale, textScale)
+        f.applyAppearance(language, font, interfaceScale, textScale, themeMode)
         f.selectPinned(template.name)
         f.awaitDailyRuntime()
         f.dailyLanding()
@@ -4917,12 +5011,36 @@ class PrimaryExecutionJourneyTest {
             font: Float,
             interfaceScale: Int,
             textScale: Int,
+            themeMode: ThemeMode = ThemeMode.SYSTEM,
         ) {
             val configuration =
                 android.content.res.Configuration(host().resources.configuration).apply {
                     setLocale(Locale.forLanguageTag(language))
                     fontScale = font
                 }
+            mountAppearance(
+                configuration,
+                Density(host().resources.displayMetrics.density, font),
+                AppearancePreferences(
+                    themeMode = themeMode,
+                    interfaceScalePercent = interfaceScale,
+                    textScalePercent = textScale,
+                ),
+            )
+        }
+
+        fun applyAppearance(configuration: PrimaryWorkflowAppearance) =
+            mountAppearance(
+                configuration.configuration(host().resources.configuration),
+                configuration.inheritedDensity(host().resources.displayMetrics.density),
+                configuration.preferences,
+            )
+
+        private fun mountAppearance(
+            configuration: android.content.res.Configuration,
+            inheritedDensity: Density,
+            appearance: AppearancePreferences,
+        ) {
             val localized = host().createConfigurationContext(configuration)
             resourceContext = localized
             scenario!!.onActivity { activity ->
@@ -4930,14 +5048,10 @@ class PrimaryExecutionJourneyTest {
                     CompositionLocalProvider(
                         LocalContext provides localized,
                         LocalConfiguration provides configuration,
-                        LocalDensity provides Density(activity.resources.displayMetrics.density, font),
+                        LocalDensity provides inheritedDensity,
                     ) {
                         LifeTracingApp(
-                            appearance =
-                                AppearancePreferences(
-                                    interfaceScalePercent = interfaceScale,
-                                    textScalePercent = textScale,
-                                ),
+                            appearance = appearance,
                             startActivityRouteSessions = activity.startActivityRouteSessions,
                             activityTemplateEditorRouteSessions = activity.activityTemplateEditorRouteSessions,
                             sequenceTemplateEditorRouteSessions = activity.sequenceTemplateEditorRouteSessions,

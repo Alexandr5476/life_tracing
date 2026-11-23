@@ -57,8 +57,10 @@ import com.alexandr5476.lifetracing.domain.StatisticsSeriesKind
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesSourceState
 import com.alexandr5476.lifetracing.domain.StatisticsSeriesSummary
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
+import com.alexandr5476.lifetracing.ui.PrimaryWorkflowAppearance
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.LifeTracingAppearance
+import com.alexandr5476.lifetracing.ui.assertTextFullyVisible
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -194,6 +196,29 @@ class StatisticsSeriesDetailAccessibilityTest {
     fun russianSequenceFactsAndFieldsReflowAtIncreasedScaling() =
         verifyScaledDetail(Locale.forLanguageTag("ru"), sequence = true)
 
+    @Test
+    fun combinedEnglishMinimumActivityDetailKeepsSignedAndZeroValuesFullyVisible() =
+        verifyCombinedDetail(PrimaryWorkflowAppearance.EnglishMinimum, sequence = false)
+
+    @Test
+    fun combinedRussianMaximumSequenceDetailKeepsLongMetricsAndOptionProvenanceFullyVisible() =
+        verifyCombinedDetail(PrimaryWorkflowAppearance.RussianMaximum, sequence = true)
+
+    private fun verifyCombinedDetail(
+        mode: PrimaryWorkflowAppearance,
+        sequence: Boolean,
+    ) {
+        val locale =
+            mode
+                .resourcesContext(compose.activity)
+                .resources.configuration.locales[0]
+        val scaled = ScaledDetail(locale, sequence, mode)
+        scaled.show()
+        scaled.assertSeries()
+        scaled.assertNumber()
+        scaled.assertCategoryAndText()
+    }
+
     private fun verifyScaledDetail(
         locale: Locale,
         sequence: Boolean,
@@ -209,13 +234,15 @@ class StatisticsSeriesDetailAccessibilityTest {
     private inner class ScaledDetail(
         private val locale: Locale,
         private val sequence: Boolean,
+        private val appearance: PrimaryWorkflowAppearance? = null,
     ) {
         private val configuration =
             Configuration(compose.activity.resources.configuration).apply {
                 setLocale(this@ScaledDetail.locale)
                 fontScale = 1.5f
             }
-        private val context: Context = compose.activity.createConfigurationContext(configuration)
+        private val context: Context =
+            appearance?.resourcesContext(compose.activity) ?: compose.activity.createConfigurationContext(configuration)
         private val name = "Distance and cadence repeated across a long planned training session"
         private val unit = "kilograms per recorded training set"
         private val optionLabel = "Archived option with a long historical label shared by two entries"
@@ -294,14 +321,20 @@ class StatisticsSeriesDetailAccessibilityTest {
                     StatisticsSeriesDetailLoadState.Content(detail),
                 )
             compose.setContent {
-                CompositionLocalProvider(
-                    LocalContext provides context,
-                    LocalConfiguration provides configuration,
-                    LocalDensity provides Density(LocalDensity.current.density, configuration.fontScale),
-                ) {
-                    LifeTracingAppearance(AppearancePreferences(interfaceScalePercent = 120, textScalePercent = 130)) {
-                        StatisticsSeriesDetailScreen(state, {}, {}, {})
+                if (appearance == null) {
+                    CompositionLocalProvider(
+                        LocalContext provides context,
+                        LocalConfiguration provides configuration,
+                        LocalDensity provides Density(LocalDensity.current.density, configuration.fontScale),
+                    ) {
+                        LifeTracingAppearance(
+                            AppearancePreferences(interfaceScalePercent = 120, textScalePercent = 130),
+                        ) {
+                            StatisticsSeriesDetailScreen(state, {}, {}, {})
+                        }
                     }
+                } else {
+                    appearance.Content { StatisticsSeriesDetailScreen(state, {}, {}, {}) }
                 }
             }
         }
@@ -375,7 +408,7 @@ class StatisticsSeriesDetailAccessibilityTest {
                     "18,446,744,073,709,551.614"
                 }
             val context = fieldContext(number, R.string.statistics_detail_number_field)
-            assertMetric(R.string.statistics_number_total, "$total $unit").assertContext(context).assertReflows()
+            assertMetric(R.string.statistics_number_total, "$total $unit").assertContext(context).assertMetricReflow()
             assertMetric(R.string.statistics_field_recorded, "2").assertContext(context)
             assertMetric(R.string.statistics_field_missing, "2").assertContext(context)
             assertMetric(R.string.statistics_field_coverage, ratio(2, 4, 0.5)).assertContext(context)
@@ -391,6 +424,7 @@ class StatisticsSeriesDetailAccessibilityTest {
             assertMetric(R.string.statistics_number_median, "-0${separator}50").assertContext(unitlessContext)
             assertMetric(R.string.statistics_number_minimum, "-2${separator}001").assertContext(unitlessContext)
             assertMetric(R.string.statistics_number_maximum, "0${separator}047").assertContext(unitlessContext)
+            if (appearance != null) assertMetricValueVisible(R.string.statistics_number_average, "-0${separator}74")
         }
 
         fun assertCategoryAndText() {
@@ -409,7 +443,7 @@ class StatisticsSeriesDetailAccessibilityTest {
                 .assertTextContains(fieldContext(text.field, R.string.statistics_detail_text_field))
             textNode(context.getString(R.string.statistics_field_text))
                 .assertContext(fieldContext(text.field, R.string.statistics_detail_text_field))
-                .assertReflows()
+                .assertMetricReflow()
         }
 
         private fun assertOption(
@@ -441,7 +475,7 @@ class StatisticsSeriesDetailAccessibilityTest {
                         ),
                         context.getString(provenance),
                     ),
-                ).assertReflows()
+                ).assertMetricReflow()
         }
 
         private fun fieldContext(
@@ -471,6 +505,17 @@ class StatisticsSeriesDetailAccessibilityTest {
             label: Int,
             value: String,
         ): SemanticsNodeInteraction = textNode(context.getString(label, value)).assertIsDisplayed()
+
+        private fun assertMetricValueVisible(
+            label: Int,
+            value: String,
+        ) {
+            assertMetric(label, value).assertTextFullyVisible()
+        }
+
+        private fun SemanticsNodeInteraction.assertMetricReflow() {
+            if (appearance == null) assertReflows() else assertTextFullyVisible()
+        }
     }
 
     private inner class Reads {

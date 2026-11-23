@@ -3,7 +3,10 @@ package com.alexandr5476.lifetracing.ui
 import android.view.KeyEvent
 import android.view.View
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -25,6 +28,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -36,6 +40,58 @@ class KeyboardInputFixtureTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
     @get:Rule val keyboard = KeyboardInputFixture(compose)
+
+    @Test
+    fun admittingDropdownKeepsOnlyHostActivityAwake() {
+        val shown = mutableStateOf(false)
+        compose.setContent {
+            LifeTracingTheme {
+                Box {
+                    TextButton(onClick = { shown.value = true }, modifier = Modifier.testTag("anchor")) {
+                        Text("Open menu")
+                    }
+                    DropdownMenu(expanded = shown.value, onDismissRequest = { shown.value = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Close menu") },
+                            onClick = { shown.value = false },
+                            modifier = Modifier.testTag("menu-action"),
+                        )
+                    }
+                }
+            }
+        }
+        val activity = compose.activity
+        val hostRoot = compose.runOnIdle { activity.window.decorView }
+        val anchor = compose.onNodeWithTag("anchor")
+        anchor.performClick()
+        val action = compose.onNodeWithTag("menu-action")
+        val popupView = (action.fetchSemanticsNode().root as ViewRootForTest).view
+        val popupRoot = compose.runOnIdle { popupView.rootView }
+        assertNotSame(hostRoot, popupRoot)
+        compose.runOnIdle {
+            assertFalse(hostRoot.keepScreenOn)
+            assertFalse(popupRoot.keepScreenOn)
+        }
+
+        val fixture = KeyboardInputFixture(compose)
+        fixture
+            .apply(
+                object : Statement() {
+                    override fun evaluate() {
+                        fixture.awaitWindowFocus(action)
+                        compose.runOnIdle {
+                            assertTrue(popupRoot.hasWindowFocus())
+                            assertFalse("Popup admission must preserve the popup's flag", popupRoot.keepScreenOn)
+                            assertTrue("The host Activity must keep the screen awake", hostRoot.keepScreenOn)
+                        }
+                    }
+                },
+                Description.createTestDescription(javaClass, "dropdown admission"),
+            ).evaluate()
+        assertFalse("Teardown must restore the host flag", compose.runOnIdle { hostRoot.keepScreenOn })
+        action.performSemanticsAction(SemanticsActions.OnClick)
+        awaitHostAfterDismissal(anchor, action, popupView)
+    }
 
     @Test
     fun hiddenImeCloseOnBackgroundWindowPreservesFocusedDialog() {
@@ -64,7 +120,7 @@ class KeyboardInputFixtureTest {
         val backgroundView = (background.fetchSemanticsNode().root as ViewRootForTest).view
         background.performSemanticsAction(SemanticsActions.OnClick)
         val confirm = compose.onNodeWithTag("confirm")
-        awaitForegroundDialog(backgroundView, confirm)
+        val dialogView = awaitForegroundDialog(backgroundView, confirm)
         confirm.performSemanticsAction(SemanticsActions.RequestFocus)
         keyboard.awaitFocus(confirm)
         assertTrue(compose.runOnIdle { !backgroundView.hasWindowFocus() })
@@ -74,7 +130,7 @@ class KeyboardInputFixtureTest {
         keyboard.closeKeyboard(background)
         confirm.assertIsFocused()
         keyboard.sendKey(confirm, KeyEvent.KEYCODE_ENTER)
-        compose.onNodeWithTag("confirm").assertDoesNotExist()
+        awaitHostAfterDismissal(background, confirm, dialogView)
     }
 
     @Test
@@ -104,7 +160,7 @@ class KeyboardInputFixtureTest {
         val backgroundView = (background.fetchSemanticsNode().root as ViewRootForTest).view
         background.performSemanticsAction(SemanticsActions.OnClick)
         val foreground = compose.onNodeWithTag("confirm")
-        awaitForegroundDialog(backgroundView, foreground)
+        val dialogView = awaitForegroundDialog(backgroundView, foreground)
         foreground.performSemanticsAction(SemanticsActions.RequestFocus)
         keyboard.awaitFocus(foreground)
 
@@ -131,6 +187,8 @@ class KeyboardInputFixtureTest {
                 Description.createTestDescription(javaClass, "independent diagnostic fixture"),
             ).evaluate()
         keyboard.awaitFocus(foreground)
+        compose.runOnIdle { shown.value = false }
+        awaitHostAfterDismissal(background, foreground, dialogView)
     }
 
     @Suppress("DEPRECATION") // Establish and restore the foreground display's actual input mode.
@@ -187,6 +245,8 @@ class KeyboardInputFixtureTest {
                             rejected.awaitFocus(foreground)
                             rejected.sendKey(foreground, KeyEvent.KEYCODE_ENTER)
                             assertTrue(commands == 1)
+                            compose.runOnIdle { shown.value = false }
+                            awaitHostAfterDismissal(background, foreground, foregroundView)
                         }
                     },
                     Description.createTestDescription(javaClass, "rejected background entry"),
@@ -226,6 +286,18 @@ class KeyboardInputFixtureTest {
             }
         }
         return foreground
+    }
+
+    private fun awaitHostAfterDismissal(
+        host: SemanticsNodeInteraction,
+        dismissed: SemanticsNodeInteraction,
+        dismissedView: View,
+    ) {
+        // Compose can remove the control before Android finishes returning native focus.
+        // Keep the host alive until the outgoing window detaches and the host owns input again.
+        dismissed.assertDoesNotExist()
+        compose.waitUntil(5_000) { compose.runOnIdle { !dismissedView.isAttachedToWindow } }
+        keyboard.awaitWindowFocus(host)
     }
 
     private fun imeVisible(target: SemanticsNodeInteraction): Boolean {

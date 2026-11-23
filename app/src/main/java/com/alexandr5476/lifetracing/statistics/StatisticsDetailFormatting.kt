@@ -8,6 +8,9 @@ import java.math.RoundingMode
 import java.text.DecimalFormatSymbols
 import java.text.NumberFormat
 import java.time.Duration
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import java.util.Locale
 
 internal const val DETAIL_NUMBER_STORAGE_SCALE = 3
@@ -91,6 +94,22 @@ internal fun statisticsDuration(
     val fraction = BigDecimal.valueOf(value.nano.toLong(), NANO_DECIMAL_SCALE).stripTrailingZeros()
     return if (value.nano == 0) clock else clock + statisticsDecimal(fraction, locale).drop(1)
 }
+
+internal fun statisticsCount(
+    value: Long,
+    locale: Locale,
+): String = NumberFormat.getIntegerInstance(locale).format(value)
+
+internal fun statisticsPeriodDate(
+    value: LocalDate,
+    locale: Locale,
+): String =
+    if (value.year <= 0) {
+        // The localized medium pattern can omit the era. Keep the signed ISO year unambiguous.
+        value.toString()
+    } else {
+        DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(locale).format(value)
+    }
 
 private const val NANO_DECIMAL_SCALE = 9
 

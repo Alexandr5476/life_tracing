@@ -63,6 +63,8 @@ import com.alexandr5476.lifetracing.domain.WallClock
 import com.alexandr5476.lifetracing.launcher.PreflightHandle
 import com.alexandr5476.lifetracing.launcher.PreflightScheduler
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
+import com.alexandr5476.lifetracing.ui.PrimaryWorkflowAppearance
+import com.alexandr5476.lifetracing.ui.assertTextFullyVisible
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -77,6 +79,7 @@ import org.junit.runner.RunWith
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.ZoneOffset
 
 @OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
@@ -111,6 +114,57 @@ class PlanExecutionScreenTest {
             compose.onNodeWithText("Day: 2026-09-15, any time").assertExists()
             controller.close()
         } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun exactExecutionShowsTheFrozenTargetAndBackAcrossCombinedAppearances() {
+        val name = "A long activity name captured in the scheduled snapshot"
+        val at = Instant.parse("2027-11-07T06:30:00Z")
+        val zone = ZoneId.of("America/New_York")
+        val base = focusedActivity(activity().copy(name = name))
+        val action = base.copy(identity = base.identity.copy(target = PlanTarget.ExactDay(at, zone)))
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+        val controller = controller(scope, action)
+        val session = PlanExecutionRouteSession(action.identity, PlanExecutionOrigin.PLAN, controller)
+        val appearance = mutableStateOf(PrimaryWorkflowAppearance.EnglishMinimum)
+        var backs = 0
+        try {
+            compose.setContent {
+                appearance.value.Content {
+                    PlanExecutionRoute(session, { backs++ }, {}, { error("No Plan was executed") })
+                }
+            }
+            compose.waitUntil { controller.state.value.prepared is PlanExecutionLoad.Content }
+            for (mode in PrimaryWorkflowAppearance.entries) {
+                compose.runOnIdle { appearance.value = mode }
+                val resources = mode.resourcesContext(context)
+                compose.onNodeWithText(name).assertTextFullyVisible()
+                compose
+                    .onNodeWithText(resources.getString(R.string.plan_execution_exact, at.toString()))
+                    .assertTextFullyVisible()
+                compose
+                    .onNodeWithText(
+                        resources.getString(
+                            R.string.plan_execution_creation_zone,
+                            zone.id,
+                            "2027-11-07T01:30",
+                            "-05:00",
+                        ),
+                    ).assertTextFullyVisible()
+                compose.onNodeWithTag("plan-execution-submit").performScrollTo().assertIsEnabled()
+                compose.runOnIdle {
+                    assertEquals(PlanExecutionCommandState.Idle, controller.state.value.command)
+                    assertEquals(0, backs)
+                }
+            }
+            val english = PrimaryWorkflowAppearance.EnglishMinimum.resourcesContext(context)
+            compose.onNodeWithText(english.getString(R.string.plan_back)).performScrollTo().performClick()
+            compose.runOnIdle { assertEquals(1, backs) }
+        } finally {
+            controller.close()
             scope.cancel()
         }
     }

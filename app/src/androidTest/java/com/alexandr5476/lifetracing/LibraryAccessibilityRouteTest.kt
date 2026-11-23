@@ -3,7 +3,12 @@
 package com.alexandr5476.lifetracing
 
 import android.view.KeyEvent
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -11,6 +16,7 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasAnyAncestor
@@ -82,6 +88,7 @@ import com.alexandr5476.lifetracing.library.LibraryController
 import com.alexandr5476.lifetracing.library.LibraryLoad
 import com.alexandr5476.lifetracing.runtime.RuntimeIsolationApplication
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
+import com.alexandr5476.lifetracing.ui.PrimaryWorkflowAppearance
 import com.alexandr5476.lifetracing.ui.onLazyNode
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -108,10 +115,10 @@ class LibraryAccessibilityRouteTest {
     @Test
     fun duplicateTemplatesOpenExactEditorSessionsAndReturnWithoutWrites() =
         journey { f ->
-            val ids = f.seedDuplicates()
+            val ids = f.seedDuplicates("Вечерняя тренировка с дополнительным восстановлением")
             f.store.library.pin(ids.first())
             val before = f.store.durableFacts()
-            f.launch()
+            f.launch(PrimaryWorkflowAppearance.RussianMaximum)
             f.enterLibrary()
             for (id in ids) {
                 val row = f.templateAction(id, R.string.library_open_template)
@@ -134,6 +141,11 @@ class LibraryAccessibilityRouteTest {
                         val session = f.host().activityTemplateEditorRouteSessions.activeSession!!
                         assertEquals(ActivityTemplateEditorTarget.Existing(id.id), session.target)
                         assertNull(f.host().sequenceTemplateEditorRouteSessions.activeSession)
+                        compose
+                            .onNodeWithText(f.text(R.string.activity_editor_done))
+                            .performScrollTo()
+                            .assertIsDisplayed()
+                            .assertIsEnabled()
                     }
                     is LibraryTemplateId.Sequence -> {
                         f.await {
@@ -149,6 +161,10 @@ class LibraryAccessibilityRouteTest {
                         val session = f.host().sequenceTemplateEditorRouteSessions.activeSession!!
                         assertEquals(SequenceTemplateEditorTarget.Existing(id.id), session.target)
                         assertNull(f.host().activityTemplateEditorRouteSessions.activeSession)
+                        compose
+                            .onLazyNode(hasText(f.text(R.string.sequence_editor_done)) and hasClickAction())
+                            .assertIsDisplayed()
+                            .assertIsEnabled()
                     }
                 }
                 f.systemBack()
@@ -931,8 +947,20 @@ class LibraryAccessibilityRouteTest {
             f.addEditorField(com.alexandr5476.lifetracing.domain.CustomFieldType.TEXT)
             f.editorFieldInput(2, R.string.activity_editor_field_name).performTextReplacement("Same")
             f.editorFieldInput(2, R.string.activity_editor_default).performTextReplacement("Text default")
+            val doneLabel = f.text(R.string.activity_editor_done)
+            val retiredSave =
+                requireNotNull(
+                    compose
+                        .onNodeWithText(
+                            doneLabel,
+                        ).performScrollTo()
+                        .fetchSemanticsNode()
+                        .config[SemanticsActions.OnClick]
+                        .action,
+                )
             f.recreate()
             assertSame(session, f.host().activityTemplateEditorRouteSessions.activeSession)
+            compose.runOnIdle { retiredSave() }
             assertEquals(before, f.store.durableFacts())
             val submitted =
                 session.controller.state.value
@@ -2953,6 +2981,7 @@ class LibraryAccessibilityRouteTest {
         var store = RuntimeRecoveryStore(app, "lifetracing.db")
         private var scenario: ActivityScenario<MainActivity>? = null
         private var activity: MainActivity? = null
+        private var localizedContext: android.content.Context? = null
         val library: LibraryController get() =
             host().libraryControllerOwner.get {
                 error(
@@ -2965,7 +2994,7 @@ class LibraryAccessibilityRouteTest {
         fun text(
             id: Int,
             vararg args: Any,
-        ): String = host().getString(id, *args)
+        ): String = (localizedContext ?: host()).getString(id, *args)
 
         fun await(condition: () -> Boolean) = compose.waitUntil(10_000, condition)
 
@@ -3267,12 +3296,12 @@ class LibraryAccessibilityRouteTest {
             description(text(R.string.activity_editor_add_field_context, text(label)))
         }
 
-        fun seedDuplicates(): List<LibraryTemplateId> {
+        fun seedDuplicates(name: String = "Shared name"): List<LibraryTemplateId> {
             val activities =
                 List(2) {
                     store.authoring.createActivityTemplate(
                         ActivityTemplateDraft(
-                            "Shared name",
+                            name,
                             null,
                             TimeTrackingMode.STOPWATCH,
                             null,
@@ -3284,7 +3313,7 @@ class LibraryAccessibilityRouteTest {
             val sequence =
                 store.authoring.createSequenceTemplate(
                     SequenceTemplateDraft(
-                        "Shared name",
+                        name,
                         null,
                         settings = SequenceTemplateSettings(sequenceStartCountdown = Duration.ofHours(1)),
                         nodes =
@@ -3303,9 +3332,29 @@ class LibraryAccessibilityRouteTest {
             return activities.map { LibraryTemplateId.Activity(it.id) } + LibraryTemplateId.Sequence(sequence.id)
         }
 
-        fun launch() {
+        fun launch(appearance: PrimaryWorkflowAppearance? = null) {
             scenario = ActivityScenario.launch(MainActivity::class.java)
-            scenario!!.onActivity { activity = it }
+            scenario!!.onActivity { host ->
+                activity = host
+                if (appearance != null) {
+                    val localized = appearance.resourcesContext(host)
+                    localizedContext = localized
+                    host.setContent {
+                        CompositionLocalProvider(
+                            LocalContext provides localized,
+                            LocalConfiguration provides localized.resources.configuration,
+                            LocalDensity provides appearance.inheritedDensity(host.resources.displayMetrics.density),
+                        ) {
+                            LifeTracingApp(
+                                appearance.preferences,
+                                activityTemplateEditorRouteSessions = host.activityTemplateEditorRouteSessions,
+                                sequenceTemplateEditorRouteSessions = host.sequenceTemplateEditorRouteSessions,
+                                libraryControllerOwner = host.libraryControllerOwner,
+                            )
+                        }
+                    }
+                }
+            }
             compose.onNodeWithText(text(R.string.daily_title)).assertIsDisplayed()
             keyboard.enter()
         }
@@ -3413,11 +3462,7 @@ class LibraryAccessibilityRouteTest {
 
         fun dismissDialogWithSystemBack(cancelDescription: String) {
             val cancel = compose.onNodeWithContentDescription(cancelDescription)
-            // A hidden IME can make closeKeyboard a no-op without entering keyboard mode.
-            keyboard.awaitWindowFocus(cancel)
-            keyboard.closeKeyboard(cancel)
-            cancel.performSemanticsAction(SemanticsActions.RequestFocus).awaitKeyboardFocus()
-            keyboard.sendKey(cancel, KeyEvent.KEYCODE_BACK)
+            keyboard.dismissDialogWithBack(cancel)
             compose.waitUntil(5_000) {
                 compose.onAllNodes(hasContentDescription(cancelDescription)).fetchSemanticsNodes().isEmpty()
             }

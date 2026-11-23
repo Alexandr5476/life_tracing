@@ -1,11 +1,15 @@
 package com.alexandr5476.lifetracing.ui
 
+import android.app.Activity
 import android.app.KeyguardManager
+import android.content.ContextWrapper
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import android.util.Log
+import android.view.KeyEvent
 import android.view.View
 import androidx.compose.ui.platform.ViewRootForTest
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.SemanticsNodeInteraction
@@ -13,6 +17,7 @@ import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.isFocused
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.printToString
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -35,7 +40,7 @@ class KeyboardInputFixture(
     private val compose: ComposeTestRule,
 ) : ExternalResource() {
     private var previousTouchMode: Boolean? = null
-    private val screenFlags = mutableMapOf<View, Boolean>()
+    private val activityScreenFlags = mutableMapOf<View, Boolean>()
 
     // A rule owns its capture budget; later testcases need fresh platform evidence.
     private val systemUiDiagnostics = SystemUiWindowDiagnostics { nativeDiagnosticShell().read(it) }
@@ -65,9 +70,14 @@ class KeyboardInputFixture(
         wakeDisplay()
         val view = (target.fetchSemanticsNode().root as ViewRootForTest).view
         compose.runOnIdle {
-            val root = view.rootView
-            screenFlags.putIfAbsent(root, root.keepScreenOn)
-            root.keepScreenOn = true
+            val activity =
+                generateSequence(view.context) { (it as? ContextWrapper)?.baseContext }
+                    .filterIsInstance<Activity>()
+                    .firstOrNull()
+            // A popup or dialog can have its own root in the same Activity.
+            val decor = checkNotNull(activity) { "The keyboard target must have a host Activity" }.window.decorView
+            activityScreenFlags.putIfAbsent(decor, decor.keepScreenOn)
+            if (!decor.keepScreenOn) decor.keepScreenOn = true
         }
         return view
     }
@@ -164,6 +174,20 @@ class KeyboardInputFixture(
         onView(isRoot()).inRoot(withDecorView(sameInstance(view.rootView))).perform(closeSoftKeyboard())
     }
 
+    /** Move focus off the editor and let IME dismissal finish before sending Back to the dialog. */
+    fun dismissDialogWithBack(target: SemanticsNodeInteraction) {
+        val view = keyboardView(target)
+        target.performSemanticsAction(SemanticsActions.RequestFocus)
+        awaitFocus(target)
+        closeKeyboard(target)
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.runOnIdle {
+                ViewCompat.getRootWindowInsets(view)?.isVisible(WindowInsetsCompat.Type.ime()) == false
+            }
+        }
+        sendKey(target, KeyEvent.KEYCODE_BACK)
+    }
+
     /** Routes a native key through the target's attached window, rather than global input focus. */
     fun sendKey(
         target: SemanticsNodeInteraction,
@@ -176,8 +200,8 @@ class KeyboardInputFixture(
     @Suppress("DEPRECATION") // Restore the platform mode even if the Activity rule has already closed.
     override fun after() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
-            screenFlags.forEach { (view, previous) -> view.keepScreenOn = previous }
-            screenFlags.clear()
+            activityScreenFlags.forEach { (decor, previous) -> decor.keepScreenOn = previous }
+            activityScreenFlags.clear()
         }
         previousTouchMode?.let { InstrumentationRegistry.getInstrumentation().setInTouchMode(it) }
         previousTouchMode = null

@@ -17,10 +17,14 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -46,8 +50,10 @@ import com.alexandr5476.lifetracing.domain.CompletedActivityHistoryRoot
 import com.alexandr5476.lifetracing.domain.CustomFieldType
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
+import com.alexandr5476.lifetracing.ui.PrimaryWorkflowAppearance
 import com.alexandr5476.lifetracing.ui.appearance.AppearancePreferences
 import com.alexandr5476.lifetracing.ui.appearance.LifeTracingAppearance
+import com.alexandr5476.lifetracing.ui.assertTextFullyVisible
 import com.alexandr5476.lifetracing.ui.components.LifeTracingSecondaryButton
 import com.alexandr5476.lifetracing.ui.theme.LifeTracingTheme
 import kotlinx.coroutines.CompletableDeferred
@@ -302,6 +308,53 @@ class ActivityHistoryCorrectionAccessibilityTest {
         click("history-correction-save")
         assertEquals(ActivityHistoryMutationIssue.INVALID_DATE_TIME, controller.state.value.issue)
         assertEquals(0L, controller.state.value.refreshGeneration)
+    }
+
+    @Test
+    fun combinedAppearanceKeepsCorrectionErrorAndFrozenOriginalOffsetsReachable() {
+        val zone = ZoneId.of("America/New_York")
+        val before = detail()
+        val original =
+            before.copy(
+                originalZoneId = zone,
+                root =
+                    before.root.copy(
+                        title = "Long recorded activity name from the immutable snapshot",
+                        primaryLocalDate = LocalDate.parse("2024-11-03"),
+                        startedAt = Instant.parse("2024-11-03T05:30:00Z"),
+                        completedAt = Instant.parse("2024-11-03T06:30:00Z"),
+                        originalZoneId = zone,
+                        originalUtcOffsetMinutes = -240,
+                    ),
+            )
+        val controller = controller(original, correct = { error("Only rejected correction input should reach Save") })
+        val session = ActivityHistoryMutationRouteSession(original.root.executionId, controller)
+        val appearance = mutableStateOf(PrimaryWorkflowAppearance.EnglishMinimum)
+        compose.setContent { appearance.value.Content { ActivityHistoryDetailRoute(session, {}, {}, {}) } }
+        click("history-correct")
+        compose.onNodeWithTag("history-correction-started-offset-0").performScrollTo().assertIsSelected()
+        compose.onNodeWithTag("history-correction-completed-offset-1").performScrollTo().assertIsSelected()
+        input("history-correction-started", "2024-03-10 02:30")
+        click("history-correction-save")
+        val invalid = controller.state.value
+        assertEquals(ActivityHistoryMutationIssue.NONEXISTENT_LOCAL_TIME, invalid.issue)
+        for (mode in PrimaryWorkflowAppearance.entries) {
+            compose.runOnIdle { appearance.value = mode }
+            val resources = mode.resourcesContext(compose.activity)
+            compose.onNodeWithText(resources.getString(R.string.history_event_zone, zone.id)).assertTextFullyVisible()
+            val gap = resources.getString(R.string.manual_history_nonexistent_time)
+            compose
+                .onNode(
+                    hasText(gap) and hasAnyAncestor(hasTestTag("history-correction-started")),
+                    useUnmergedTree = true,
+                ).assertTextFullyVisible()
+            compose.onNodeWithTag("history-correction-completed-offset-1").performScrollTo().assertIsSelected()
+            compose.onNodeWithTag("history-correction-save").performScrollTo().assertIsEnabled()
+            compose.onNodeWithTag("history-correction-cancel").performScrollTo().assertIsEnabled()
+        }
+        compose.runOnIdle { assertSame(invalid, controller.state.value) }
+        click("history-correction-cancel")
+        assertNull(controller.state.value.draft)
     }
 
     @Test

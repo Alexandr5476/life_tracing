@@ -104,6 +104,8 @@ import com.alexandr5476.lifetracing.domain.SequenceSnapshotNodeId
 import com.alexandr5476.lifetracing.domain.SequenceSnapshotSettings
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.ui.KeyboardInputFixture
+import com.alexandr5476.lifetracing.ui.PrimaryWorkflowAppearance
+import com.alexandr5476.lifetracing.ui.assertTextFullyVisible
 import com.alexandr5476.lifetracing.ui.components.LifeTracingAccessibleTargets
 import com.alexandr5476.lifetracing.ui.components.onFocusTargetAttachmentChanged
 import com.alexandr5476.lifetracing.ui.exactHistoricalTimestamp
@@ -196,6 +198,45 @@ class SequenceHistoryPresentationTest {
             text(R.string.history_repeat_iteration, 1).assertExists()
             text(R.string.sequence_history_not_runtime_added).assertExists()
             text(R.string.sequence_history_completion_reason, compose.activity.getString(labels[index])).assertExists()
+        }
+    }
+
+    @Test
+    fun combinedAppearanceKeepsFrozenOccurrenceAndChildProvenanceReadable() {
+        val owner = occurrence(0)
+        val added =
+            occurrence(1, RuntimeOccurrenceStatus.SKIPPED).copy(
+                sourceSequenceSnapshotNodeId = null,
+                repeatSourceSnapshotNodeId = null,
+                repeatIteration = null,
+                isRuntimeAdded = true,
+            )
+        val canonical = detail(listOf(owner, added))
+        val appearance = mutableStateOf(PrimaryWorkflowAppearance.EnglishMinimum)
+        compose.setContent { appearance.value.Content { SequenceDetail(canonical) } }
+        for (mode in PrimaryWorkflowAppearance.entries) {
+            compose.runOnIdle { appearance.value = mode }
+            val resources = mode.resourcesContext(compose.activity)
+            val labels =
+                listOf(
+                    R.string.sequence_history_occurrence_id to "o0",
+                    R.string.sequence_history_source_id to "frozen-step",
+                    R.string.sequence_history_repeat_id to "frozen-repeat",
+                    R.string.sequence_history_activity_snapshot_id to "same-snapshot",
+                    R.string.sequence_history_child_id to "child-o0",
+                )
+            for ((id, value) in labels) {
+                scroll("occurrence:o0")
+                compose
+                    .onNode(hasText(resources.getString(id, value)) and scope(), useUnmergedTree = true)
+                    .assertTextFullyVisible()
+            }
+            scroll("occurrence:o1")
+            compose
+                .onNode(
+                    hasText(resources.getString(R.string.history_runtime_added)) and scope(),
+                    useUnmergedTree = true,
+                ).assertTextFullyVisible()
         }
     }
 
@@ -2023,7 +2064,7 @@ class SequenceHistoryPresentationTest {
                     compose.runOnIdle { locale.value = language }
                     scroll("sequence:root")
                     val executionLabel =
-                        if (isRussian) "ID выполнения Sequence: root" else "Sequence execution ID: root"
+                        if (isRussian) "ID выполнения последовательности: root" else "Sequence execution ID: root"
                     root.assert(hasText(executionLabel))
                     val status =
                         if (index == 0) {

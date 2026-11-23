@@ -631,6 +631,7 @@
     <string name="archived_templates_retry">Retry Restore</string>
     <string name="archived_templates_target">%1$s “%2$s”</string>
     <string name="archived_templates_target_with_id">%1$s “%2$s”, template ID %3$s</string>
+    <string name="archived_templates_id">Template ID: %1$s</string>
     <string name="archived_templates_row">Archived template. %1$s</string>
     <string name="archived_templates_row_with_comment">Archived template. %1$s. Short comment: %2$s</string>
     <string name="archived_templates_restore_target">Restore %1$s</string>
@@ -638,7 +639,7 @@
     <string name="plan_invalid_date">Enter a valid date (YYYY-MM-DD).</string>
     <string name="plan_invalid_time">Enter a valid local time (HH:mm).</string>
     <string name="plan_unsupported_time_precision">Use whole milliseconds for the time, for example 10:00:00.123.</string>
-    <string name="plan_nonexistent_time">This local time does not exist in the displayed timezone. Choose another time.</string>
+    <string name="plan_nonexistent_time">This local time does not exist.</string>
     <string name="plan_ambiguous_time">This local time occurs twice. Choose an occurrence.</string>
     <string name="plan_invalid_offset">The selected UTC offset is no longer valid for this date, time and timezone. Choose again.</string>
     <string name="plan_zone_changed">The device timezone changed. Review this date and time in the current timezone before saving.</string>
@@ -662,8 +663,8 @@
     <string name="daily_countdown_remaining">Next-step countdown remaining: %1$s</string>
     <string name="daily_history_no_duration">No live tracking; duration not recorded</string>
     <string name="daily_history_duration">Active duration: %1$s</string>
-    <string name="daily_duration_seconds">%1$d hours, %2$d minutes, %3$d seconds</string>
-    <string name="daily_duration_minutes">%1$d hours, %2$d minutes</string>
+    <string name="daily_duration_seconds">Hours: %1$d, minutes: %2$d, seconds: %3$d</string>
+    <string name="daily_duration_minutes">Hours: %1$d, minutes: %2$d</string>
     <string name="daily_stopwatch_elapsed">Stopwatch elapsed: %1$s</string>
     <string name="daily_timer_value">Timer: %1$s</string>
     <string name="daily_no_live_value">No live tracking. Main value: %1$s</string>
