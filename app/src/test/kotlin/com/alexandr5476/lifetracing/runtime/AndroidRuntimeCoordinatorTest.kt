@@ -430,6 +430,38 @@ class AndroidRuntimeCoordinatorTest {
         }
 
     @Test
+    fun acceptedSoundAttemptSurvivesNotificationPublicationFailure() =
+        runBlocking {
+            val running = runningTimer()
+            val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(running))
+            val feedback = RuntimeDeadlineFeedback(deadline, soundEnabled = true, vibrationEnabled = false)
+            var current: ActiveRuntime? = running
+            var soundAttempts = 0
+            val notifications = FakeNotifications(throwOnPublish = true)
+            val dispatcher =
+                AndroidRuntimeFeedbackDispatcher(
+                    RuntimeSoundPlayer { soundAttempts++ },
+                    RuntimeVibrator { error("Vibration is disabled") },
+                )
+            val coordinator =
+                coordinator(
+                    load = { current },
+                    reconcile = {
+                        current = null
+                        RuntimeReconciliationResult(null, listOf(feedback))
+                    },
+                    feedback = dispatcher::dispatch,
+                    notifications = notifications,
+                )
+
+            coordinator.onDeadlineSignal(deadline)
+
+            assertEquals(1, soundAttempts)
+            assertEquals(1, notifications.attempts)
+            assertEquals(1L, coordinator.semanticGeneration.value)
+        }
+
+    @Test
     fun stateChangesSynchronizeBothSchedulersAndNotificationWithoutFeedback() =
         runBlocking {
             var current: ActiveRuntime? = runningTimer()

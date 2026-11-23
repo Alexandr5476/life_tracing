@@ -73,6 +73,10 @@ class RuntimePlatformAndroidTest {
         assertTrue(Manifest.permission.RECEIVE_BOOT_COMPLETED in permissions)
         assertTrue(Manifest.permission.VIBRATE in permissions)
         assertTrue(Manifest.permission.POST_NOTIFICATIONS in permissions)
+        assertFalse(Manifest.permission.READ_MEDIA_AUDIO in permissions)
+        assertFalse(Manifest.permission.READ_EXTERNAL_STORAGE in permissions)
+        assertFalse(Manifest.permission.ACCESS_NOTIFICATION_POLICY in permissions)
+        assertFalse(Manifest.permission.MODIFY_AUDIO_SETTINGS in permissions)
         // Keep the same receiver assertions on both sides of the API-33 overload boundary.
         for (receiver in listOf(RuntimeDeadlineReceiver::class.java, RuntimeRecoveryReceiver::class.java)) {
             val component = ComponentName(context, receiver)

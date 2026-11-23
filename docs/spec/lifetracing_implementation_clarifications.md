@@ -240,7 +240,9 @@ In-process display progression uses an immutable baseline built from a wall/`ela
 
 When exact-alarm special access is unavailable, the adapter uses one `setAndAllowWhileIdle()` `RTC_WAKEUP` fallback. Delivery may be delayed, while later reconciliation still persists exact logical event timestamps. No background component opens Settings or requests notification permission.
 
-Deadline feedback is a non-durable effect. Alarm and user-present foreground recovery, including foreground process start, emit at most the latest applied semantic deadline from that bounded reconciliation; earlier catch-up events are suppressed. Boot and time-change recovery reconcile and reschedule without sound or vibration. The sound contract is currently backed by a no-op adapter until a product-owned cue asset is selected; vibration is implemented through the platform vibrator API.
+Deadline feedback is a non-durable effect. Alarm and user-present foreground recovery, including foreground process start, emit at most the latest applied semantic deadline from that bounded reconciliation; earlier catch-up events are suppressed. Boot and time-change recovery reconcile and reschedule without sound or vibration.
+
+Under Option B, each accepted sound-enabled deadline requests at most one playback of the current Android system-default notification cue. The existing frozen Activity and effective Sequence/Step sound settings remain authoritative. Playback is best effort, and the exact audible tone depends on the device and its current Android configuration. V1 has no in-app sound selection. Silent mode, Do Not Disturb, and system-disabled audio are respected. Vibration uses the platform vibrator API and is attempted independently when enabled. Runtime notifications remain silent.
 
 ## Daily and Plan temporal projection ownership
 
