@@ -23,6 +23,7 @@ import com.alexandr5476.lifetracing.domain.RuntimeInsertionPlacement
 import com.alexandr5476.lifetracing.domain.SequenceExecutionId
 import com.alexandr5476.lifetracing.domain.SequenceExecutionStatus
 import com.alexandr5476.lifetracing.domain.SequenceNodeDraft
+import com.alexandr5476.lifetracing.domain.SequenceStepOverrides
 import com.alexandr5476.lifetracing.domain.SequenceTemplateDraft
 import com.alexandr5476.lifetracing.domain.SequenceTemplateSettings
 import com.alexandr5476.lifetracing.domain.StepActivityDraft
@@ -106,7 +107,7 @@ class RuntimeCoordinatorRecoveryTest(
             assertEquals(Duration.ofSeconds(30), display.activeElapsed(900_000))
             assertEquals(Duration.ofSeconds(30), display.timerRemaining(900_000))
             assertEquals(Duration.ofSeconds(29), display.timerRemaining(901_000))
-            assertTrue(process.effects.isEmpty())
+            process.assertNoFeedback()
         }
 
     @Test
@@ -138,6 +139,8 @@ class RuntimeCoordinatorRecoveryTest(
                 assertNull(store.live.getActiveRuntime())
                 assertEquals(listOf(deadline), process.effects.map { it.deadline })
                 assertEquals(process.effects, process.notifications.completions)
+                assertEquals(1, process.soundAttempts)
+                assertEquals(1, process.vibrationAttempts)
                 assertNull(process.coordinator.displayBaseline)
                 assertEquals(1, process.scheduler.cancellations)
                 assertEquals(1, process.local.cancellations)
@@ -147,6 +150,8 @@ class RuntimeCoordinatorRecoveryTest(
                 assertEquals(completed, store.activity(execution.id))
                 assertEquals(1, process.effects.size)
                 assertEquals(1, process.notifications.completions.size)
+                assertEquals(1, process.soundAttempts)
+                assertEquals(1, process.vibrationAttempts)
                 discard()
                 open(branch)
                 assertEquals(completed, store.activity(execution.id))
@@ -157,66 +162,103 @@ class RuntimeCoordinatorRecoveryTest(
     @Test
     fun multiBoundarySequenceForegroundAndLateSignalEmitOnlyTheLatestCompletion() =
         runBlocking {
-            val id = startSequence()
-            val before = store.sequence(id)
-            val originalChild = store.children(id).single()
-            val first = nextDeadline()
-            createProcess(0, 0).coordinator.onRuntimeStateChanged()
-            discard()
-            context.getDatabasePath(name).copyTo(context.getDatabasePath(lateName))
-            var foregroundEvents: List<RuntimeDeadlineFeedback>? = null
-            for (alarm in listOf(false, true)) {
-                val branch = if (alarm) lateName else name
-                open(branch)
-                assertEquals(before, store.sequence(id))
-                createProcess(100, 700)
-                if (alarm) process.coordinator.onDeadlineSignal(first) else process.coordinator.onForeground()
-
-                val terminal = store.sequence(id)
-                assertEquals(before.id, terminal.id)
-                assertEquals(originalChild.id, store.children(id).minBy { requireNotNull(it.startedAt) }.id)
-                assertEquals(before.snapshotId, terminal.snapshotId)
-                assertEquals(before.occurrences.map { it.id }, terminal.occurrences.map { it.id })
-                assertEquals(listOf(at(0), at(8), at(18)), terminal.occurrences.map { it.enteredAt })
-                assertEquals(listOf(at(5), at(15), at(29)), terminal.occurrences.map { it.completedAt })
-                assertEquals(at(29), terminal.endedAt)
-                assertEquals(SequenceExecutionStatus.COMPLETED, terminal.status)
-                assertEquals(
-                    listOf(at(5), at(15), at(29)),
-                    store
-                        .children(id)
-                        .sortedBy {
-                            it.startedAt
-                        }.map { it.completedAt },
-                )
-                val latest = process.effects.single().deadline
-                assertEquals(at(29), latest.at)
-                assertEquals(RuntimeDeadlineKind.SEQUENCE_TIMER_ZERO, latest.kind)
-                assertEquals(terminal.occurrences.last().id, latest.expectedOccurrenceId)
-                assertEquals(process.effects, process.notifications.completions)
-                if (alarm) {
-                    assertEquals(foregroundEvents, process.effects)
-                } else {
-                    foregroundEvents =
-                        process.effects.toList()
-                }
-                assertNull(store.live.getActiveRuntime())
-                assertEquals(1, process.local.cancellations)
-                assertEquals(1, process.scheduler.cancellations)
-
-                val children = store.children(id)
-                process.coordinator.onDeadlineSignal(first)
-                process.coordinator.onDeadlineSignal(latest)
-                assertEquals(terminal, store.sequence(id))
-                assertEquals(children, store.children(id))
-                assertEquals(1, process.effects.size)
-                assertEquals(1, process.notifications.completions.size)
-                discard()
-                open(branch)
-                assertEquals(terminal, store.sequence(id))
-                discard()
-            }
+            assertMultiBoundaryLatestFeedback(latestSoundEnabled = false)
+            assertTrue(context.deleteDatabase(name))
+            assertTrue(context.deleteDatabase(lateName))
+            open()
+            assertMultiBoundaryLatestFeedback(latestSoundEnabled = true)
         }
+
+    private suspend fun assertMultiBoundaryLatestFeedback(latestSoundEnabled: Boolean) {
+        val id =
+            startSequence(
+                transitionSound = !latestSoundEnabled,
+                lastStepOverrides =
+                    SequenceStepOverrides(
+                        timerEndSound = latestSoundEnabled,
+                        timerEndVibration = !latestSoundEnabled,
+                    ),
+            )
+        val expectedSoundAttempts = if (latestSoundEnabled) 1 else 0
+        val expectedVibrationAttempts = if (latestSoundEnabled) 0 else 1
+        val before = store.sequence(id)
+        val originalChild = store.children(id).single()
+        val first = nextDeadline()
+        createProcess(0, 0).coordinator.onRuntimeStateChanged()
+        discard()
+        context.getDatabasePath(name).copyTo(context.getDatabasePath(lateName))
+        var foregroundEvents: List<RuntimeDeadlineFeedback>? = null
+        for (alarm in listOf(false, true)) {
+            val branch = if (alarm) lateName else name
+            open(branch)
+            assertEquals(before, store.sequence(id))
+            createProcess(100, 700)
+            if (alarm) process.coordinator.onDeadlineSignal(first) else process.coordinator.onForeground()
+
+            val applied = process.appliedEvents
+            assertEquals(listOf(5L, 8L, 15L, 18L, 29L).map(::at), applied.map { it.deadline.at })
+            // Countdown into the final Step uses that Step's same effective feedback settings.
+            val earlierSound = List(3) { !latestSoundEnabled }
+            val finalStepSound = List(2) { latestSoundEnabled }
+            assertEquals(earlierSound + finalStepSound, applied.map { it.soundEnabled })
+            val terminal = store.sequence(id)
+            assertEquals(before.id, terminal.id)
+            assertEquals(originalChild.id, store.children(id).minBy { requireNotNull(it.startedAt) }.id)
+            assertEquals(before.snapshotId, terminal.snapshotId)
+            assertEquals(before.occurrences.map { it.id }, terminal.occurrences.map { it.id })
+            assertEquals(listOf(at(0), at(8), at(18)), terminal.occurrences.map { it.enteredAt })
+            assertEquals(listOf(at(5), at(15), at(29)), terminal.occurrences.map { it.completedAt })
+            assertEquals(at(29), terminal.endedAt)
+            assertEquals(SequenceExecutionStatus.COMPLETED, terminal.status)
+            assertEquals(
+                listOf(at(5), at(15), at(29)),
+                store
+                    .children(id)
+                    .sortedBy {
+                        it.startedAt
+                    }.map { it.completedAt },
+            )
+            val feedback = process.effects.single()
+            assertEquals(applied.last(), feedback)
+            val latest = feedback.deadline
+            assertEquals(at(29), latest.at)
+            assertEquals(RuntimeDeadlineKind.SEQUENCE_TIMER_ZERO, latest.kind)
+            assertEquals(terminal.occurrences.last().id, latest.expectedOccurrenceId)
+            assertEquals(process.effects, process.notifications.completions)
+            if (alarm) {
+                assertEquals(foregroundEvents, process.effects)
+            } else {
+                foregroundEvents =
+                    process.effects.toList()
+            }
+            assertNull(store.live.getActiveRuntime())
+            assertEquals(1, process.local.cancellations)
+            assertEquals(1, process.scheduler.cancellations)
+            assertEquals(expectedSoundAttempts, process.soundAttempts)
+            assertEquals(expectedVibrationAttempts, process.vibrationAttempts)
+
+            val children = store.children(id)
+            process.coordinator.onDeadlineSignal(first)
+            process.coordinator.onDeadlineSignal(latest)
+            process.coordinator.onForeground()
+            assertEquals(terminal, store.sequence(id))
+            assertTrue(process.appliedEvents.isEmpty())
+            assertEquals(children, store.children(id))
+            assertEquals(1, process.effects.size)
+            assertEquals(1, process.notifications.completions.size)
+            assertEquals(expectedSoundAttempts, process.soundAttempts)
+            assertEquals(expectedVibrationAttempts, process.vibrationAttempts)
+            discard()
+            open(branch)
+            assertEquals(terminal, store.sequence(id))
+            assertEquals(children, store.children(id))
+            assertNull(store.live.getActiveSession())
+            val history = requireNotNull(store.history.getSequenceDetail(id))
+            assertEquals(terminal.intervals, history.intervals)
+            assertEquals(terminal.occurrences.map { it.completedAt }, history.occurrences.map { it.completedAt })
+            discard()
+        }
+    }
 
     @Test
     fun bootCatchUpIsSilentAndRearmsOnlyTheRemainingSemanticDeadline() =
@@ -228,6 +270,8 @@ class RuntimeCoordinatorRecoveryTest(
             createProcess(20, 1_000)
             process.coordinator.onBootCompleted()
 
+            assertEquals(listOf(at(5), at(8), at(15), at(18)), process.appliedEvents.map { it.deadline.at })
+            assertTrue(process.appliedEvents.all { it.soundEnabled && it.vibrationEnabled })
             assertEquals(listOf(at(0), at(8), at(18)), store.sequence(id).occurrences.map { it.enteredAt })
             assertEquals(
                 at(29),
@@ -237,16 +281,24 @@ class RuntimeCoordinatorRecoveryTest(
             )
             assertEquals(WallMonotonicAnchor(at(20), 1_000), process.local.anchor)
             assertEquals(10_000L, process.local.anchor!!.elapsedAt(at(29)))
-            assertTrue(process.effects.isEmpty())
-            assertTrue(process.notifications.completions.isEmpty())
+            process.assertNoFeedback()
 
             process.wall.value = at(100)
             process.coordinator.onBootCompleted()
             assertEquals(at(29), store.sequence(id).endedAt)
+            val terminalEvent = process.appliedEvents.single()
+            assertEquals(at(29), terminalEvent.deadline.at)
             assertEquals(1, process.scheduler.cancellations)
             assertEquals(1, process.local.cancellations)
-            assertTrue(process.effects.isEmpty())
-            assertTrue(process.notifications.completions.isEmpty())
+            process.coordinator.onBootCompleted()
+            assertTrue(process.appliedEvents.isEmpty())
+            process.assertNoFeedback()
+            assertNull(store.live.getActiveSession())
+            val completed = store.sequence(id)
+            discard()
+            open()
+            assertEquals(completed, store.sequence(id))
+            assertNull(store.live.getActiveSession())
         }
 
     @Test
@@ -257,7 +309,7 @@ class RuntimeCoordinatorRecoveryTest(
                 android.content.Intent.ACTION_TIMEZONE_CHANGED,
             )) {
                 val id = startSequence()
-                createProcess(0, 50_000, observeAnchor = true).coordinator.onRuntimeStateChanged()
+                createProcess(0, 50_000).coordinator.onRuntimeStateChanged()
                 process.wall.value = at(20)
                 process.monotonic.value = 51_000
                 assertEquals(at(1), process.coordinator.clockAnchor.estimatedWallNow())
@@ -283,8 +335,7 @@ class RuntimeCoordinatorRecoveryTest(
                         .last()
                         .enteredAt,
                 )
-                assertTrue(process.effects.isEmpty())
-                assertTrue(process.notifications.completions.isEmpty())
+                process.assertNoFeedback()
 
                 process.wall.value = at(100)
                 process.monotonic.value = 52_000
@@ -293,8 +344,9 @@ class RuntimeCoordinatorRecoveryTest(
                 assertEquals(at(29), store.sequence(id).endedAt)
                 assertEquals(3, process.scheduler.cancellations)
                 assertEquals(3, process.local.cancellations)
-                assertTrue(process.effects.isEmpty())
-                assertTrue(process.notifications.completions.isEmpty())
+                requireNotNull(RuntimeBroadcastOperation.recovery(action)).dispatch(process.coordinator)
+                process.assertNoFeedback()
+                assertNull(store.live.getActiveSession())
             }
         }
 
@@ -593,13 +645,16 @@ class RuntimeCoordinatorRecoveryTest(
             store.live.reconcileActiveSession(at(5))
             assertColdForegroundPreservesState(id, 6, ActiveSequenceState.RUNNING_TRANSITION_COUNTDOWN)
             val deadline = nextDeadline()
+            val countdownCallback = requireNotNull(process.local.callback)
             val target = (store.live.getActiveRuntime() as ActiveSequenceRuntime).transitionCountdownTargetId
             process.wall.value = at(8).minusMillis(1)
             process.coordinator.onDeadlineSignal(deadline)
             assertNull(store.sequence(id).currentOccurrenceId)
             assertEquals(1, store.children(id).size)
+            process.assertNoFeedback()
             process.wall.value = at(8)
             process.coordinator.onDeadlineSignal(deadline)
+            countdownCallback(deadline)
             assertEquals(target, store.sequence(id).currentOccurrenceId)
             assertEquals(at(8), store.children(id).maxBy { requireNotNull(it.startedAt) }.startedAt)
             val children = store.children(id)
@@ -607,7 +662,42 @@ class RuntimeCoordinatorRecoveryTest(
             process.coordinator.onDeadlineSignal(deadline)
             assertEquals(children, store.children(id))
             assertEquals(1, process.effects.size)
+            assertEquals(1, process.soundAttempts)
+            assertEquals(1, process.vibrationAttempts)
+            assertEquals(process.effects, process.notifications.completions)
+            assertLocalWinnerAndReopenedState(id)
         }
+
+    private suspend fun assertLocalWinnerAndReopenedState(id: SequenceExecutionId) {
+        val timer = nextDeadline()
+        assertEquals(at(15), timer.at)
+        assertEquals(timer, process.local.deadline)
+        assertEquals(timer, process.scheduler.deadlines.last())
+        val timerCallback = requireNotNull(process.local.callback)
+        process.wall.value = timer.at
+        timerCallback(timer)
+        process.coordinator.onDeadlineSignal(timer)
+
+        val next = nextDeadline()
+        assertEquals(at(18), next.at)
+        assertEquals(next, process.local.deadline)
+        assertEquals(next, process.scheduler.deadlines.last())
+        assertEquals(listOf(at(8), timer.at), process.effects.map { it.deadline.at })
+        assertEquals(2, process.soundAttempts)
+        assertEquals(2, process.vibrationAttempts)
+        assertEquals(process.effects, process.notifications.completions)
+        val committed = store.sequence(id)
+        val children = store.children(id)
+        assertEquals(timer.at, committed.occurrences[1].completedAt)
+        val active = store.live.getActiveSession()
+        assertEquals(id, requireNotNull(active).sequenceExecutionId)
+        discard()
+        open()
+        assertEquals(committed, store.sequence(id))
+        assertEquals(children, store.children(id))
+        assertEquals(active, store.live.getActiveSession())
+        assertEquals(next, nextDeadline())
+    }
 
     @Test
     fun pausedCountdownRetainsConsumedIntervalAndResumeUsesOnlyTheRemainder() =
@@ -677,6 +767,7 @@ class RuntimeCoordinatorRecoveryTest(
                 process.coordinator.onSystemTimeChanged()
                 assertEquals(terminal, store.sequence(id))
                 assertNull(store.live.getActiveSession())
+                process.assertNoFeedback()
             }
         }
 
@@ -703,7 +794,7 @@ class RuntimeCoordinatorRecoveryTest(
             assertEquals(2_001L, process.local.anchor!!.elapsedAt(expected.at))
             assertEquals(2, process.local.cancellations)
             assertEquals(2, process.scheduler.cancellations)
-            assertTrue(process.effects.isEmpty())
+            process.assertNoFeedback()
             process.wall.value = expected.at.plusMillis(1)
             process.monotonic.value = 3_000
             signal.dispatch(process.coordinator)
@@ -718,8 +809,7 @@ class RuntimeCoordinatorRecoveryTest(
             process.coordinator.onForeground()
             assertEquals(completed, store.activity(execution.id))
             assertEquals(1L to 0L, store.executionCounts())
-            assertTrue(process.effects.isEmpty())
-            assertTrue(process.notifications.completions.isEmpty())
+            process.assertNoFeedback()
             discard()
             open()
             createProcess(100, 90_000)
@@ -727,6 +817,7 @@ class RuntimeCoordinatorRecoveryTest(
             assertNull(store.live.getActiveRuntime())
             assertNull(process.coordinator.displayBaseline)
             assertEquals(completed, store.activity(execution.id))
+            process.assertNoFeedback()
         }
 
     @Test
@@ -738,8 +829,9 @@ class RuntimeCoordinatorRecoveryTest(
             discard()
             TimeZone.setDefault(TimeZone.getTimeZone("America/New_York"))
             open()
-            val result = store.live.reconcileActiveSession(at(100))
-            assertEquals(listOf(5L, 8L, 15L, 18L, 29L).map(::at), result.appliedEvents.map { it.deadline.at })
+            createProcess(100, 10_000).coordinator.onSystemTimeChanged()
+            val events = process.appliedEvents
+            assertEquals(listOf(5L, 8L, 15L, 18L, 29L).map(::at), events.map { it.deadline.at })
             assertEquals(
                 listOf(
                     RuntimeDeadlineKind.SEQUENCE_TIMER_ZERO,
@@ -748,8 +840,11 @@ class RuntimeCoordinatorRecoveryTest(
                     RuntimeDeadlineKind.SEQUENCE_TRANSITION_COUNTDOWN,
                     RuntimeDeadlineKind.SEQUENCE_TIMER_ZERO,
                 ),
-                result.appliedEvents.map { it.deadline.kind },
+                events.map { it.deadline.kind },
             )
+            assertTrue(events.all { it.soundEnabled && it.vibrationEnabled })
+            assertNull(store.live.getActiveSession())
+            process.assertNoFeedback()
             val terminal = store.sequence(id)
             assertEquals(listOf(0L, 5L, 8L, 15L, 18L).map(::at), terminal.intervals.map { it.startedAt })
             assertEquals(listOf(5L, 8L, 15L, 18L, 29L).map(::at), terminal.intervals.map { it.endedAt })
@@ -780,11 +875,10 @@ class RuntimeCoordinatorRecoveryTest(
             discard()
             open()
             createProcess(200, 20_000).coordinator.onForeground()
-            for (event in result.appliedEvents) process.coordinator.onDeadlineSignal(event.deadline)
+            for (event in events) process.coordinator.onDeadlineSignal(event.deadline)
             assertEquals(terminal, store.sequence(id))
             assertEquals(children, store.children(id))
-            assertTrue(process.effects.isEmpty())
-            assertTrue(process.notifications.completions.isEmpty())
+            process.assertNoFeedback()
         }
 
     @Test
@@ -844,7 +938,7 @@ class RuntimeCoordinatorRecoveryTest(
         TimeZone.setDefault(TimeZone.getTimeZone("Pacific/Auckland"))
         open()
         assertEquals(before, store.live.getActiveRuntime())
-        createProcess(recoverySeconds, 900_000, observeAnchor = true).coordinator.onForeground()
+        createProcess(recoverySeconds, 900_000).coordinator.onForeground()
         repeat(2) {
             requireNotNull(RuntimeBroadcastOperation.recovery(android.content.Intent.ACTION_TIMEZONE_CHANGED))
                 .dispatch(process.coordinator)
@@ -855,9 +949,7 @@ class RuntimeCoordinatorRecoveryTest(
         assertEquals(counts, store.executionCounts())
         assertEquals(WallMonotonicAnchor(at(recoverySeconds), 900_000), process.anchorAtReconciliation)
         assertEquals(deadline, process.local.deadline)
-        assertTrue(process.effects.isEmpty())
-        assertEquals(0, process.soundAttempts)
-        assertTrue(process.notifications.completions.isEmpty())
+        process.assertNoFeedback()
         if (expectedState != null) {
             val runtime = store.live.getActiveRuntime() as ActiveSequenceRuntime
             assertEquals(expectedState, ActiveSequenceStateResolver.resolve(runtime))
@@ -907,6 +999,8 @@ class RuntimeCoordinatorRecoveryTest(
     private fun startSequence(
         mode: TimeTrackingMode = TimeTrackingMode.TIMER,
         autoAdvance: Boolean = true,
+        transitionSound: Boolean = true,
+        lastStepOverrides: SequenceStepOverrides = SequenceStepOverrides(),
     ): SequenceExecutionId {
         val activities =
             listOf(5L, 7L, 11L).map {
@@ -929,6 +1023,7 @@ class RuntimeCoordinatorRecoveryTest(
                         SequenceTemplateSettings(
                             autoAdvance = autoAdvance,
                             beforeEachStepCountdown = Duration.ofSeconds(3),
+                            transitionSound = transitionSound,
                         ),
                     nodes =
                         activities.mapIndexed { index, activity ->
@@ -937,6 +1032,7 @@ class RuntimeCoordinatorRecoveryTest(
                                     DraftIdentity.New("step-$index"),
                                     index,
                                     StepActivityDraft.FromTemplate(activity.id),
+                                    if (index == activities.lastIndex) lastStepOverrides else SequenceStepOverrides(),
                                 ),
                             )
                         },
@@ -962,8 +1058,7 @@ class RuntimeCoordinatorRecoveryTest(
     private fun createProcess(
         wallSeconds: Long,
         elapsedMs: Long,
-        observeAnchor: Boolean = false,
-    ): Process = Process(store, at(wallSeconds), elapsedMs, observeAnchor).also { processReference = it }
+    ): Process = Process(store, at(wallSeconds), elapsedMs).also { processReference = it }
 
     internal class MutableWallClock(
         var value: Instant,
@@ -981,7 +1076,6 @@ class RuntimeCoordinatorRecoveryTest(
         store: RuntimeRecoveryStore,
         wallInstant: Instant,
         elapsedMs: Long = 0,
-        observeAnchor: Boolean = false,
         soundPlayer: RuntimeSoundPlayer = RuntimeSoundPlayer {},
     ) {
         val wall = MutableWallClock(wallInstant)
@@ -995,6 +1089,9 @@ class RuntimeCoordinatorRecoveryTest(
         var vibrationAttempts = 0
             private set
         var anchorAtReconciliation: WallMonotonicAnchor? = null
+            private set
+        var appliedEvents = emptyList<RuntimeDeadlineFeedback>()
+            private set
         val coordinator: AndroidRuntimeCoordinator
 
         init {
@@ -1012,32 +1109,27 @@ class RuntimeCoordinatorRecoveryTest(
                     platformFeedback.dispatch(it)
                 }
             coordinator =
-                if (observeAnchor) {
-                    AndroidRuntimeCoordinator(
-                        store.live::getActiveRuntime,
-                        { now ->
-                            anchorAtReconciliation = currentAnchor()
-                            store.live.reconcileActiveSession(now)
-                        },
-                        wall,
-                        monotonic,
-                        scheduler,
-                        local,
-                        feedback,
-                        notifications,
-                        {},
-                    )
-                } else {
-                    AndroidRuntimeCoordinator(
-                        store.live,
-                        wall,
-                        monotonic,
-                        scheduler,
-                        local,
-                        feedback,
-                        notifications,
-                    )
-                }
+                AndroidRuntimeCoordinator(
+                    store.live::getActiveRuntime,
+                    { now ->
+                        anchorAtReconciliation = currentAnchor()
+                        store.live.reconcileActiveSession(now).also { appliedEvents = it.appliedEvents }
+                    },
+                    wall,
+                    monotonic,
+                    scheduler,
+                    local,
+                    feedback,
+                    notifications,
+                    {},
+                )
+        }
+
+        fun assertNoFeedback() {
+            assertTrue(effects.isEmpty())
+            assertEquals(0, soundAttempts)
+            assertEquals(0, vibrationAttempts)
+            assertTrue(notifications.completions.isEmpty())
         }
 
         private fun currentAnchor() = coordinator.clockAnchor.snapshot()

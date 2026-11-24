@@ -33,7 +33,7 @@ internal fun awaitRuntimeSystemState(
 }
 
 /** Scope real framework permission delegation and the pre-33 application-op to this assertion. */
-internal fun withRuntimeNotificationsEnabled(
+internal inline fun withRuntimeNotificationsEnabled(
     context: Context,
     assertion: (AndroidRuntimeNotificationPublisher, NotificationManager) -> Unit,
 ) {

@@ -39,6 +39,7 @@ import com.alexandr5476.lifetracing.domain.nextRemainingOccurrence
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -307,64 +308,93 @@ class AndroidRuntimeCoordinatorTest {
 
     @Test
     fun localAndAlarmRaceUsesOneStaleCheckedTransitionAndEffect() =
-        runBlocking {
-            var current: ActiveRuntime? = runningTimer()
-            val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(current)))
-            val feedback = RuntimeDeadlineFeedback(deadline, true, true)
-            val local = FakeLocalDriver()
-            val effects = mutableListOf<RuntimeDeadlineFeedback>()
-            var reconciliations = 0
-            val coordinator =
-                coordinator(
-                    load = { current },
-                    reconcile = {
-                        reconciliations++
-                        current = null
-                        RuntimeReconciliationResult(null, listOf(feedback))
-                    },
-                    local = local,
-                    feedback = effects::add,
-                    wallSeconds = 60,
-                )
-
-            coordinator.onRuntimeStateChanged()
-            local.fire()
-            coordinator.onDeadlineSignal(deadline)
-
-            assertEquals(1, reconciliations)
-            assertEquals(listOf(feedback), effects)
-        }
+        runBlocking { assertDeadlineDeliveryOrder(localFirst = true) }
 
     @Test
-    fun alarmThenCancelledLocalCallbackIsHarmless() =
-        runBlocking {
-            var current: ActiveRuntime? = runningTimer()
-            val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(current)))
-            val feedback = RuntimeDeadlineFeedback(deadline, true, true)
-            val local = FakeLocalDriver()
-            val effects = mutableListOf<RuntimeDeadlineFeedback>()
-            var reconciliations = 0
-            val coordinator =
-                coordinator(
-                    load = { current },
-                    reconcile = {
-                        reconciliations++
-                        current = null
-                        RuntimeReconciliationResult(null, listOf(feedback))
-                    },
-                    local = local,
-                    feedback = effects::add,
-                    wallSeconds = 60,
-                )
+    fun alarmThenCancelledLocalCallbackIsHarmless() = runBlocking { assertDeadlineDeliveryOrder(localFirst = false) }
 
-            coordinator.onRuntimeStateChanged()
-            val oldCallback = local.armed.single().callback
+    @Suppress("LongMethod") // Assert state and effects at each deadline against the same driver and coordinator.
+    private suspend fun assertDeadlineDeliveryOrder(localFirst: Boolean) {
+        val sequence =
+            SequenceHarness(
+                listOf(
+                    activity("first", TimeTrackingMode.TIMER, 10),
+                    activity("second", TimeTrackingMode.TIMER, 10),
+                ),
+            )
+        val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(sequence.runtime())))
+        val nextOccurrence = sequence.state.execution.occurrences[1]
+        val nextDeadline = deadline.copy(at = instant(20), expectedOccurrenceId = nextOccurrence.id)
+        val feedback = RuntimeDeadlineFeedback(deadline, true, true)
+        val nextFeedback = RuntimeDeadlineFeedback(nextDeadline, true, true)
+        val wall = MutableWallClock(deadline.at)
+        val scheduler = FakeScheduler()
+        val local = FakeLocalDriver()
+        val notifications = FakeNotifications()
+        val effects = mutableListOf<RuntimeDeadlineFeedback>()
+        var soundAttempts = 0
+        var vibrationAttempts = 0
+        val dispatcher =
+            AndroidRuntimeFeedbackDispatcher(
+                RuntimeSoundPlayer { soundAttempts++ },
+                RuntimeVibrator { vibrationAttempts++ },
+            )
+        var reconciliations = 0
+        val coordinator =
+            coordinator(
+                load = sequence::runtime,
+                reconcile = { now ->
+                    val due = requireNotNull(NextRuntimeDeadlineResolver.resolve(requireNotNull(sequence.runtime())))
+                    reconciliations++
+                    sequence.reconcile(now)
+                    val applied = RuntimeDeadlineFeedback(due, true, true)
+                    RuntimeReconciliationResult(sequence.runtime()?.session, listOf(applied))
+                },
+                scheduler = scheduler,
+                local = local,
+                notifications = notifications,
+                feedback = {
+                    effects += it
+                    dispatcher.dispatch(it)
+                },
+                wall = wall,
+            )
+
+        coordinator.onRuntimeStateChanged()
+        val oldCallback = local.armed.single().callback
+        assertEquals(0, reconciliations)
+        assertEquals(0, soundAttempts)
+        assertEquals(0, vibrationAttempts)
+        if (localFirst) {
+            local.fire()
+            coordinator.onDeadlineSignal(deadline)
+        } else {
             coordinator.onDeadlineSignal(deadline)
             oldCallback(deadline)
-
-            assertEquals(1, reconciliations)
-            assertEquals(listOf(feedback), effects)
         }
+
+        assertEquals(1, reconciliations)
+        assertEquals(listOf(feedback), effects)
+        assertEquals(listOf(feedback), notifications.completions)
+        assertEquals(1, soundAttempts)
+        assertEquals(1, vibrationAttempts)
+        val afterFirst = sequence.state.execution
+        assertEquals(deadline.at, afterFirst.occurrences.first().completedAt)
+        assertEquals(nextOccurrence.id, afterFirst.currentOccurrenceId)
+        assertEquals(nextDeadline, scheduler.scheduled.last())
+        assertEquals(nextDeadline, local.armed.last().deadline)
+
+        wall.value = nextDeadline.at
+        local.fire()
+        coordinator.onDeadlineSignal(nextDeadline)
+        assertEquals(2, reconciliations)
+        assertEquals(listOf(feedback, nextFeedback), effects)
+        assertEquals(effects, notifications.completions)
+        assertEquals(2, soundAttempts)
+        assertEquals(2, vibrationAttempts)
+        assertEquals(nextDeadline.at, sequence.state.execution.endedAt)
+        assertNull(sequence.runtime())
+    }
 
     @Test
     fun failedDurableRecoveryDoesNotPublishScheduleOrFeedbackSuccess() {

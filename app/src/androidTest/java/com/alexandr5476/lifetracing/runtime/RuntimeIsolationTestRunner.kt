@@ -93,14 +93,19 @@ class RuntimeIsolationApplication : LifeTracingApplication() {
 /** Cold owner uses the production factory, clocks and repositories, with an optional audio-only fault. */
 internal class ManifestRuntimeEnvironment(
     private val platformOwned: Boolean,
-    notificationCue: RuntimeNotificationCue? = null,
+    private val notificationCue: RuntimeNotificationCue? = null,
 ) {
     val name = "manifest-runtime-" + UUID.randomUUID()
     var acquisitions = 0
         private set
     private var graph: LifeTracingRuntimeGraph? = null
     private var closeRuntimeDatabase: () -> Unit = {}
-    val owner =
+
+    @Volatile
+    var owner = newOwner()
+        private set
+
+    private fun newOwner() =
         RuntimeGraphOwner { context ->
             check(platformOwned) { "Database-only fixture cannot acquire Android runtime resources" }
             acquisitions++
@@ -108,6 +113,12 @@ internal class ManifestRuntimeEnvironment(
                 .create(context, notificationCue) { repository ->
                     closeRuntimeDatabase = { RuntimeRecoveryStore.closeProductionRuntimeRepository(repository) }
                 }.also { graph = it }
+        }
+
+    suspend fun discardGraph() =
+        withContext(NonCancellable) {
+            close()
+            owner = newOwner()
         }
 
     suspend fun close() {
@@ -118,7 +129,10 @@ internal class ManifestRuntimeEnvironment(
                 ?.get(Job)
                 ?.cancelAndJoin()
         } finally {
-            closeRuntimeDatabase()
+            val close = closeRuntimeDatabase
+            graph = null
+            closeRuntimeDatabase = {}
+            close()
             // The outer platform lease cleans only after successful vacancy preflight and after
             // this graph has stopped. Rejected acquisition never enters fixture teardown.
         }

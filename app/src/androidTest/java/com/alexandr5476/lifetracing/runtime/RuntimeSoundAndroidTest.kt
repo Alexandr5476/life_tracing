@@ -12,12 +12,14 @@ import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
+import androidx.core.content.ContextCompat
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.LifeTracingRuntimeGraph
 import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
 import com.alexandr5476.lifetracing.domain.ActiveSessionKind
 import com.alexandr5476.lifetracing.domain.ActivityEntrySource
+import com.alexandr5476.lifetracing.domain.ActivityExecutionId
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
@@ -171,8 +173,18 @@ class RuntimeSoundAndroidTest {
             val cue = UnavailableNotificationCue()
             application.withDisposableRuntime(notificationCue = cue) { environment ->
                 val audioContext = DeniedNotificationPermissionContext(application)
+                val deadline =
+                    RuntimeRecoveryStore(application, environment.name).use { store ->
+                        seedOverdueSoundEnabledTimer(store)
+                    }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    assertEquals(
+                        PackageManager.PERMISSION_DENIED,
+                        ContextCompat.checkSelfPermission(audioContext, Manifest.permission.POST_NOTIFICATIONS),
+                    )
+                    assertFalse(AndroidRuntimeNotificationPublisher(audioContext).canPostRuntimeNotifications())
+                }
                 RuntimeRecoveryStore(application, environment.name).use { store ->
-                    val deadline = seedOverdueSoundEnabledTimer(store)
                     val graph = LifeTracingRuntimeGraph.from(audioContext, environment.owner)
                     assertSame(graph, LifeTracingRuntimeGraph.from(audioContext, environment.owner))
                     assertEquals(0, cue.resolutionAttempts.get())
@@ -190,6 +202,14 @@ class RuntimeSoundAndroidTest {
                             },
                         )
                     }
+                }
+                environment.discardGraph()
+                RuntimeRecoveryStore(application, environment.name).use { reopened ->
+                    val id = ActivityExecutionId(deadline.executionId)
+                    val history = requireNotNull(reopened.history.getActivityDetail(id))
+                    assertEquals(id, history.root.executionId)
+                    assertEquals(deadline.at, history.root.completedAt)
+                    assertNull(reopened.live.getActiveSession())
                 }
             }
         }
