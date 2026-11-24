@@ -369,6 +369,7 @@ class AndroidRuntimeCoordinatorTest {
     @Test
     fun failedDurableRecoveryDoesNotPublishScheduleOrFeedbackSuccess() {
         val runtime = runningTimer()
+        val deadline = requireNotNull(NextRuntimeDeadlineResolver.resolve(runtime))
         val scheduler = FakeScheduler()
         val local = FakeLocalDriver()
         val notifications = FakeNotifications()
@@ -385,6 +386,9 @@ class AndroidRuntimeCoordinatorTest {
 
         assertThrows(IllegalStateException::class.java) {
             runBlocking { coordinator.onForeground() }
+        }
+        assertThrows(IllegalStateException::class.java) {
+            runBlocking { coordinator.onDeadlineSignal(deadline) }
         }
 
         assertEquals(0, scheduler.scheduled.size)

@@ -12,6 +12,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivityStepDraft
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
+import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.DraftIdentity
 import com.alexandr5476.lifetracing.domain.MonotonicClock
 import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
@@ -345,7 +346,13 @@ class RuntimeCoordinatorRecoveryTest(
             assertEquals(1, priorEffects.size)
             val inserted =
                 store.authoring.createActivityTemplate(
-                    ActivityTemplateDraft("inserted", null, TimeTrackingMode.TIMER, Duration.ofSeconds(50)),
+                    ActivityTemplateDraft(
+                        "inserted",
+                        null,
+                        TimeTrackingMode.TIMER,
+                        Duration.ofSeconds(50),
+                        ActivityTemplateSettings(timerEndSound = false, timerEndVibration = false),
+                    ),
                     createdAt = at(6),
                 )
             store.live.runtimeAdd(
@@ -358,6 +365,9 @@ class RuntimeCoordinatorRecoveryTest(
             process.monotonic.value = 6_000
             process.coordinator.onRuntimeStateChanged()
             val before = requireNotNull(store.live.getActiveRuntime()) as ActiveSequenceRuntime
+            val added = before.execution.occurrences.single { it.id == before.execution.currentOccurrenceId }
+            assertTrue(added.isRuntimeAdded)
+            assertNull(added.sourceSequenceSnapshotNodeId)
             val children = store.children(id)
             val counts = store.executionCounts()
             val replacement = requireNotNull(process.local.deadline)
@@ -375,10 +385,16 @@ class RuntimeCoordinatorRecoveryTest(
             assertEquals(counts, store.executionCounts())
             assertEquals(replacement, process.local.deadline)
             assertEquals(priorEffects, process.effects)
+            assertEquals(1, process.soundAttempts)
             assertEquals(priorCompletions, process.notifications.completions)
             discard()
             open()
             assertEquals(before, store.live.getActiveRuntime())
+            createProcess(56, 56_000).coordinator.onDeadlineSignal(replacement)
+            val expected = RuntimeDeadlineFeedback(replacement, soundEnabled = true, vibrationEnabled = true)
+            assertEquals(expected, process.effects.single())
+            assertEquals(1, process.soundAttempts)
+            assertEquals(1, process.vibrationAttempts)
         }
 
     @Test
@@ -840,6 +856,7 @@ class RuntimeCoordinatorRecoveryTest(
         assertEquals(WallMonotonicAnchor(at(recoverySeconds), 900_000), process.anchorAtReconciliation)
         assertEquals(deadline, process.local.deadline)
         assertTrue(process.effects.isEmpty())
+        assertEquals(0, process.soundAttempts)
         assertTrue(process.notifications.completions.isEmpty())
         if (expectedState != null) {
             val runtime = store.live.getActiveRuntime() as ActiveSequenceRuntime
@@ -948,23 +965,24 @@ class RuntimeCoordinatorRecoveryTest(
         observeAnchor: Boolean = false,
     ): Process = Process(store, at(wallSeconds), elapsedMs, observeAnchor).also { processReference = it }
 
-    private class MutableWallClock(
+    internal class MutableWallClock(
         var value: Instant,
     ) : WallClock {
         override fun now(): Instant = value
     }
 
-    private class MutableMonotonicClock(
+    internal class MutableMonotonicClock(
         var value: Long,
     ) : MonotonicClock {
         override fun elapsedRealtimeMillis(): Long = value
     }
 
-    private class Process(
+    internal class Process(
         store: RuntimeRecoveryStore,
         wallInstant: Instant,
-        elapsedMs: Long,
-        observeAnchor: Boolean,
+        elapsedMs: Long = 0,
+        observeAnchor: Boolean = false,
+        soundPlayer: RuntimeSoundPlayer = RuntimeSoundPlayer {},
     ) {
         val wall = MutableWallClock(wallInstant)
         val monotonic = MutableMonotonicClock(elapsedMs)
@@ -972,10 +990,27 @@ class RuntimeCoordinatorRecoveryTest(
         val local = RecordingLocalDriver()
         val effects = mutableListOf<RuntimeDeadlineFeedback>()
         val notifications = RecordingNotifications()
+        var soundAttempts = 0
+            private set
+        var vibrationAttempts = 0
+            private set
         var anchorAtReconciliation: WallMonotonicAnchor? = null
         val coordinator: AndroidRuntimeCoordinator
 
         init {
+            val platformFeedback =
+                AndroidRuntimeFeedbackDispatcher(
+                    RuntimeSoundPlayer {
+                        soundAttempts++
+                        soundPlayer.play()
+                    },
+                    RuntimeVibrator { vibrationAttempts++ },
+                )
+            val feedback =
+                RuntimeFeedbackDispatcher {
+                    effects += it
+                    platformFeedback.dispatch(it)
+                }
             coordinator =
                 if (observeAnchor) {
                     AndroidRuntimeCoordinator(
@@ -988,7 +1023,7 @@ class RuntimeCoordinatorRecoveryTest(
                         monotonic,
                         scheduler,
                         local,
-                        RuntimeFeedbackDispatcher(effects::add),
+                        feedback,
                         notifications,
                         {},
                     )
@@ -999,7 +1034,7 @@ class RuntimeCoordinatorRecoveryTest(
                         monotonic,
                         scheduler,
                         local,
-                        RuntimeFeedbackDispatcher(effects::add),
+                        feedback,
                         notifications,
                     )
                 }
@@ -1008,7 +1043,7 @@ class RuntimeCoordinatorRecoveryTest(
         private fun currentAnchor() = coordinator.clockAnchor.snapshot()
     }
 
-    private class RecordingScheduler : RuntimeDeadlineScheduler {
+    internal class RecordingScheduler : RuntimeDeadlineScheduler {
         val deadlines = mutableListOf<RuntimeDeadline>()
         var cancellations = 0
         var fail = false
@@ -1026,7 +1061,7 @@ class RuntimeCoordinatorRecoveryTest(
         override fun canScheduleExactRuntimeDeadlines(): Boolean = false
     }
 
-    private class RecordingLocalDriver : InProcessRuntimeDeadlineDriver {
+    internal class RecordingLocalDriver : InProcessRuntimeDeadlineDriver {
         var deadline: RuntimeDeadline? = null
         var anchor: WallMonotonicAnchor? = null
         var callback: (suspend (RuntimeDeadline) -> Unit)? = null
@@ -1053,13 +1088,16 @@ class RuntimeCoordinatorRecoveryTest(
         }
     }
 
-    private class RecordingNotifications : RuntimeNotificationPublisher {
+    internal class RecordingNotifications : RuntimeNotificationPublisher {
         val completions = mutableListOf<RuntimeDeadlineFeedback>()
+        var lastRuntime: ActiveRuntime? = null
+            private set
 
         override fun publish(
             runtime: ActiveRuntime?,
             completion: RuntimeDeadlineFeedback?,
         ) {
+            lastRuntime = runtime
             completion?.let(completions::add)
         }
 

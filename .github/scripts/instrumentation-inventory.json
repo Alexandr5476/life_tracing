@@ -1437,6 +1437,12 @@
       "productionGraphAttemptsSoundWithAudioUnavailableAndNotificationPermissionDenied",
       "replacementAndTimeoutCloseThePreviousCueBeforeAnotherStarts"
     ],
+    "com.alexandr5476.lifetracing.runtime.RuntimeSoundDurabilityTest": [
+      "pausedAndManuallyCompletedActivityRejectsSoundFromCapturedDeadline",
+      "planSequenceHasEquivalentReopenedFactsAcrossSuccessfulThrowingAndMissingSound",
+      "sequenceTimerAndCountdownUseFrozenInheritanceAndExplicitOverrides",
+      "standaloneTimerUsesFrozenFlagsAtExactAndLateDeliveryAndAfterReopen"
+    ],
     "com.alexandr5476.lifetracing.settings.ArchivedTemplatesScreenTest": [
       "english_and_russian_states_reflow_and_restore_is_the_only_row_action"
     ],
