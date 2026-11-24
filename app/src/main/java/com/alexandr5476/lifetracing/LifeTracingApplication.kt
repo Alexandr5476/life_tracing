@@ -58,10 +58,9 @@ import com.alexandr5476.lifetracing.runtime.AndroidRuntimeCoordinator
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeDeadlineScheduler
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeFeedbackDispatcher
 import com.alexandr5476.lifetracing.runtime.AndroidRuntimeNotificationPublisher
-import com.alexandr5476.lifetracing.runtime.AndroidRuntimeVibrator
 import com.alexandr5476.lifetracing.runtime.AndroidWallClock
 import com.alexandr5476.lifetracing.runtime.CoroutineInProcessRuntimeDeadlineDriver
-import com.alexandr5476.lifetracing.runtime.NoOpRuntimeSoundPlayer
+import com.alexandr5476.lifetracing.runtime.RuntimeNotificationCue
 import com.alexandr5476.lifetracing.settings.ArchivedRestoreCoordinator
 import com.alexandr5476.lifetracing.settings.SettingsAppearanceMutations
 import com.alexandr5476.lifetracing.statistics.StatisticsController
@@ -217,10 +216,11 @@ class LifeTracingRuntimeGraph internal constructor(
 
         private fun create(context: Context): LifeTracingRuntimeGraph = create(context) {}
 
-        /** Observe the real repository owner for isolated instrumentation cleanup; no dependency substitution. */
+        /** Instrumentation can observe the real repository owner and isolate cue resolution. */
         @Suppress("CyclomaticComplexMethod", "LongMethod") // Runtime graph wiring stays at one composition root.
         internal fun create(
             context: Context,
+            notificationCue: RuntimeNotificationCue? = null,
             observeRuntimeRepository: (LiveSessionRepository) -> Unit,
         ): LifeTracingRuntimeGraph {
             val exceptionHandler =
@@ -257,7 +257,7 @@ class LifeTracingRuntimeGraph internal constructor(
                     AndroidMonotonicClock,
                     AndroidRuntimeDeadlineScheduler(context),
                     CoroutineInProcessRuntimeDeadlineDriver(scope, AndroidMonotonicClock),
-                    AndroidRuntimeFeedbackDispatcher(NoOpRuntimeSoundPlayer, AndroidRuntimeVibrator(context)),
+                    AndroidRuntimeFeedbackDispatcher.create(context, scope, notificationCue),
                     AndroidRuntimeNotificationPublisher(context),
                 )
             return LifeTracingRuntimeGraph(

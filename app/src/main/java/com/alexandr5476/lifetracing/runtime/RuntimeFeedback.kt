@@ -6,6 +6,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import com.alexandr5476.lifetracing.domain.RuntimeDeadlineFeedback
+import kotlinx.coroutines.CoroutineScope
 
 fun interface RuntimeFeedbackDispatcher {
     fun dispatch(feedback: RuntimeDeadlineFeedback)
@@ -17,10 +18,6 @@ fun interface RuntimeSoundPlayer {
 
 fun interface RuntimeVibrator {
     fun vibrate()
-}
-
-object NoOpRuntimeSoundPlayer : RuntimeSoundPlayer {
-    override fun play() = Unit
 }
 
 class AndroidRuntimeVibrator(
@@ -48,7 +45,28 @@ class AndroidRuntimeFeedbackDispatcher(
     private val vibrator: RuntimeVibrator,
 ) : RuntimeFeedbackDispatcher {
     override fun dispatch(feedback: RuntimeDeadlineFeedback) {
-        if (feedback.soundEnabled) soundPlayer.play()
-        if (feedback.vibrationEnabled) vibrator.vibrate()
+        if (feedback.soundEnabled) attemptEffect { soundPlayer.play() }
+        if (feedback.vibrationEnabled) attemptEffect { vibrator.vibrate() }
+    }
+
+    @Suppress("TooGenericExceptionCaught", "SwallowedException") // Each platform effect is best effort.
+    private inline fun attemptEffect(effect: () -> Unit) {
+        try {
+            effect()
+        } catch (_: RuntimeException) {
+            // Keep the other enabled effect eligible even when this one fails.
+        }
+    }
+
+    internal companion object {
+        fun create(
+            context: Context,
+            scope: CoroutineScope,
+            notificationCue: RuntimeNotificationCue? = null,
+        ): AndroidRuntimeFeedbackDispatcher =
+            AndroidRuntimeFeedbackDispatcher(
+                AndroidRuntimeSoundPlayer(scope, notificationCue ?: AndroidNotificationCue(context)),
+                AndroidRuntimeVibrator(context),
+            )
     }
 }

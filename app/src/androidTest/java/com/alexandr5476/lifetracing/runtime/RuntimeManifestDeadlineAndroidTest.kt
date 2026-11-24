@@ -1,13 +1,14 @@
 package com.alexandr5476.lifetracing.runtime
 
+import android.app.Notification
+import android.app.NotificationManager
 import android.content.Context
-import android.content.ContextWrapper
-import android.database.DatabaseErrorHandler
-import android.database.sqlite.SQLiteDatabase
+import android.media.RingtoneManager
+import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.alexandr5476.lifetracing.LifeTracingRuntimeGraph
-import com.alexandr5476.lifetracing.RuntimeGraphOwner
+import com.alexandr5476.lifetracing.R
 import com.alexandr5476.lifetracing.data.persistence.PlanSchedulingStore
 import com.alexandr5476.lifetracing.data.persistence.RuntimeRecoveryStore
 import com.alexandr5476.lifetracing.domain.ActiveActivityRuntime
@@ -16,6 +17,7 @@ import com.alexandr5476.lifetracing.domain.ActivityExecution
 import com.alexandr5476.lifetracing.domain.ActivityExecutionPauseId
 import com.alexandr5476.lifetracing.domain.ActivityExecutionStatus
 import com.alexandr5476.lifetracing.domain.ActivityTemplateDraft
+import com.alexandr5476.lifetracing.domain.ActivityTemplateSettings
 import com.alexandr5476.lifetracing.domain.CurrentZoneIdProvider
 import com.alexandr5476.lifetracing.domain.NextRuntimeDeadlineResolver
 import com.alexandr5476.lifetracing.domain.PlanEntryStatus
@@ -24,10 +26,10 @@ import com.alexandr5476.lifetracing.domain.RuntimeDeadline
 import com.alexandr5476.lifetracing.domain.TimeTrackingMode
 import com.alexandr5476.lifetracing.domain.actionIdentity
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -36,7 +38,6 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.File
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
@@ -50,7 +51,7 @@ class RuntimeManifestDeadlineAndroidTest {
     @Test(timeout = 60_000)
     fun productionPendingIntentReachesManifestReceiverAndDurableHistoryAfterReopen() =
         runBlocking {
-            assertDatabaseUnchanged { runManifestAcceptance() }
+            assertDatabaseUnchanged { runManifestAcceptance(cue = ManifestNotificationCue(failPlayback = true)) }
         }
 
     @Test(timeout = 60_000)
@@ -206,8 +207,9 @@ class RuntimeManifestDeadlineAndroidTest {
     private suspend fun runManifestAcceptance(
         afterSeed: () -> Unit = {},
         afterDelivery: () -> Unit = {},
+        cue: ManifestNotificationCue? = null,
     ) {
-        application.withDisposableRuntime { environment ->
+        application.withDisposableRuntime(notificationCue = cue) { environment ->
             val persisted =
                 RuntimeRecoveryStore(context, APPLICATION_DATABASE).use { store ->
                     assertNull(store.live.getActiveSession())
@@ -221,18 +223,28 @@ class RuntimeManifestDeadlineAndroidTest {
                     assertEquals(1, environment.acquisitions)
                     assertEquals(before, store.durableFacts())
                     assertEquals(future, (store.live.getActiveRuntime() as ActiveActivityRuntime).execution)
+                    cue?.assertNoResolution()
                     afterDelivery()
                     val graph = LifeTracingRuntimeGraph.from(context)
                     graph.coordinator.mutationGate.admit().run {
                         store.live.completeActiveActivity(future.startedAt!!.plusSeconds(1))
                     }
                     graph.coordinator.onRuntimeStateChanged()
+                    cue?.assertNoResolution()
 
                     // No foreground recovery or local driver is armed for this overdue fixture.
                     // Only the unsuppressed production token can trigger the matching transition.
                     val original = seed(store, Instant.now().minusSeconds(600), Duration.ofSeconds(60))
                     val expected = deadline(store)
-                    send(expected)
+                    if (cue == null) {
+                        send(expected)
+                    } else {
+                        withRuntimeNotificationsEnabled(context) { _, manager ->
+                            send(expected)
+                            cue.assertPlayback()
+                            assertSilentCompletion(manager)
+                        }
+                    }
                     awaitRuntimeSystemState("manifest receiver durable completion") {
                         store.live.getActiveSession() == null
                     }
@@ -241,6 +253,7 @@ class RuntimeManifestDeadlineAndroidTest {
                     send(expected)
                     send(expected.copy(executionId = "obsolete-" + UUID.randomUUID()))
                     assertEquals(completed, store.durableFacts())
+                    cue?.assertNoResolution()
                     Triple(original, expected, completed)
                 }
             RuntimeRecoveryStore(context, APPLICATION_DATABASE).use { reopened ->
@@ -253,56 +266,74 @@ class RuntimeManifestDeadlineAndroidTest {
     @Test(timeout = 60_000)
     fun coldProductionGraphAcquisitionReconcilesClosedPhysicalFixture() =
         runBlocking {
-            RuntimePlatformFixture.acquire(context).use {
-                val name = "cold-production-" + UUID.randomUUID()
-                val isolated = IsolatedRuntimeDatabaseContext(context, name)
-                var graph: LifeTracingRuntimeGraph? = null
-                var closeRuntimeDatabase: () -> Unit = {}
-                try {
+            val cue = ManifestNotificationCue(failPlayback = false)
+            assertDatabaseUnchanged {
+                application.withDisposableRuntime(notificationCue = cue) { environment ->
                     val original =
-                        RuntimeRecoveryStore(context, name).use { store ->
+                        RuntimeRecoveryStore(context, environment.name).use { store ->
                             seed(store, Instant.now().minusSeconds(600), Duration.ofSeconds(60))
                         }
                     val expected =
-                        RuntimeRecoveryStore(context, name).use { store -> deadline(store) }
-                    var acquisitions = 0
-                    val owner =
-                        RuntimeGraphOwner { applicationContext ->
-                            acquisitions++
-                            LifeTracingRuntimeGraph
-                                .create(applicationContext) { repository ->
-                                    closeRuntimeDatabase = {
-                                        RuntimeRecoveryStore.closeProductionRuntimeRepository(repository)
-                                    }
-                                }.also { graph = it }
+                        RuntimeRecoveryStore(context, environment.name).use { store -> deadline(store) }
+                    assertEquals(0, environment.acquisitions)
+                    withRuntimeNotificationsEnabled(context) { _, manager ->
+                        // Acquisition and dispatch use the production launcher and graph.
+                        dispatchAndAwaitFinish(RuntimeBroadcastOperation.Deadline(expected))
+                        cue.assertPlayback()
+                        assertSilentCompletion(manager)
+                    }
+                    assertEquals(1, environment.acquisitions)
+                    environment.discardGraph()
+                    val completed =
+                        RuntimeRecoveryStore(context, environment.name).use { reopened ->
+                            assertCompleted(reopened, original, expected)
+                            assertEquals(1L to 0L, reopened.executionCounts())
+                            reopened.durableFacts()
                         }
-                    assertEquals(0, acquisitions)
-                    val finished = CompletableDeferred<Unit>()
-                    // Separate cold-acquisition proof uses the real factory and all real repositories,
-                    // clocks and platform adapters. It does not claim manifest dispatch or process death.
-                    launchRuntimeBroadcast(RuntimeBroadcastOperation.Deadline(expected), { finished.complete(Unit) }) {
-                        LifeTracingRuntimeGraph.from(isolated, owner)
-                    }
-                    withTimeout(10_000) { finished.await() }
-                    assertEquals(1, acquisitions)
-                    graph!!.scope.coroutineContext[Job]!!.cancelAndJoin()
-                    closeRuntimeDatabase() // Close the production Room owner on every supported API.
-                    closeRuntimeDatabase = {}
-                    RuntimeRecoveryStore(context, name).use { reopened ->
+
+                    val reconstructed = LifeTracingRuntimeGraph.from(context)
+                    assertEquals(2, environment.acquisitions)
+                    cue.assertNoResolution()
+                    dispatchAndAwaitFinish(RuntimeBroadcastOperation.Deadline(expected))
+                    reconstructed.coordinator.onForeground()
+                    reconstructed.coordinator.recoverAndSchedule()
+                    cue.assertNoResolution()
+                    environment.discardGraph()
+                    RuntimeRecoveryStore(context, environment.name).use { reopened ->
                         assertCompleted(reopened, original, expected)
-                        assertEquals(1L to 0L, reopened.executionCounts())
+                        assertEquals(completed, reopened.durableFacts())
                     }
-                } finally {
-                    graph
-                        ?.scope
-                        ?.coroutineContext
-                        ?.get(Job)
-                        ?.cancelAndJoin()
-                    closeRuntimeDatabase()
-                    context.deleteDatabase(name)
                 }
             }
         }
+
+    private suspend fun dispatchAndAwaitFinish(operation: RuntimeBroadcastOperation) {
+        val finished = CompletableDeferred<Unit>()
+        launchRuntimeBroadcast(operation, { finished.complete(Unit) }) { LifeTracingRuntimeGraph.from(context) }
+        withTimeout(10_000) { finished.await() }
+    }
+
+    @Suppress("DEPRECATION") // Inspect the posted payload as well as the legacy defaults it could carry.
+    private fun assertSilentCompletion(manager: NotificationManager) {
+        val title = context.getString(R.string.runtime_notification_due)
+
+        fun completion() =
+            manager.activeNotifications
+                .singleOrNull { it.id == AndroidRuntimeNotificationPublisher.NOTIFICATION_ID && it.tag == null }
+                ?.notification
+                ?.takeIf { it.extras.getString(Notification.EXTRA_TITLE) == title }
+
+        awaitRuntimeSystemState("silent runtime completion") { completion() != null }
+        val notification = requireNotNull(completion())
+        val channelId = AndroidRuntimeNotificationPublisher.CHANNEL_ID
+        assertEquals(channelId, notification.channelId)
+        val channel = requireNotNull(manager.getNotificationChannel(channelId))
+        assertNull(channel.sound)
+        assertFalse(channel.shouldVibrate())
+        assertNull(notification.sound)
+        assertNull(notification.vibrate)
+        assertEquals(0, notification.defaults and (Notification.DEFAULT_SOUND or Notification.DEFAULT_VIBRATE))
+    }
 
     private fun send(expected: RuntimeDeadline) {
         assertManifestDeadlineIntent(context, RuntimeDeadlineIntentCodec.intent(context, expected))
@@ -316,7 +347,13 @@ class RuntimeManifestDeadlineAndroidTest {
     ): ActivityExecution {
         val template =
             store.authoring.createActivityTemplate(
-                ActivityTemplateDraft("Manifest timer " + UUID.randomUUID(), null, TimeTrackingMode.TIMER, duration),
+                ActivityTemplateDraft(
+                    "Manifest timer " + UUID.randomUUID(),
+                    null,
+                    TimeTrackingMode.TIMER,
+                    duration,
+                    ActivityTemplateSettings(timerEndSound = true, timerEndVibration = true),
+                ),
                 createdAt = startedAt,
             )
         store.activityCommands.startLive(
@@ -350,29 +387,34 @@ class RuntimeManifestDeadlineAndroidTest {
     private companion object {
         const val APPLICATION_DATABASE = "lifetracing.db"
     }
-}
 
-/** Redirect only the database filename; production graph construction and Android services stay real. */
-private class IsolatedRuntimeDatabaseContext(
-    base: Context,
-    private val databaseName: String,
-) : ContextWrapper(base) {
-    override fun getApplicationContext(): Context = this
+    private class ManifestNotificationCue(
+        private val failPlayback: Boolean,
+    ) : RuntimeNotificationCue {
+        private val selectedCue = Uri.parse("content://runtime-test/default-notification")
+        private val resolutions = Channel<Int>(Channel.UNLIMITED)
+        private val playback = Channel<Uri>(Channel.UNLIMITED)
 
-    override fun getDatabasePath(name: String): File = baseContext.getDatabasePath(scopedName(name))
+        override fun resolve(type: Int): Uri {
+            check(resolutions.trySend(type).isSuccess)
+            return selectedCue
+        }
 
-    override fun openOrCreateDatabase(
-        name: String,
-        mode: Int,
-        factory: SQLiteDatabase.CursorFactory?,
-    ): SQLiteDatabase = baseContext.openOrCreateDatabase(scopedName(name), mode, factory)
+        override suspend fun play(uri: Uri) {
+            playback.send(uri)
+            check(!failPlayback) { "Playback unavailable" }
+        }
 
-    override fun openOrCreateDatabase(
-        name: String,
-        mode: Int,
-        factory: SQLiteDatabase.CursorFactory?,
-        errorHandler: DatabaseErrorHandler?,
-    ): SQLiteDatabase = baseContext.openOrCreateDatabase(scopedName(name), mode, factory, errorHandler)
+        suspend fun assertPlayback() {
+            withTimeout(10_000) {
+                assertEquals(RingtoneManager.TYPE_NOTIFICATION, resolutions.receive())
+                assertEquals(selectedCue, playback.receive())
+            }
+        }
 
-    private fun scopedName(name: String): String = if (name == "lifetracing.db") databaseName else name
+        suspend fun assertNoResolution() {
+            // The receiver can finish before the graph's asynchronous sound consumer runs.
+            assertNull("Unexpected asynchronous cue resolution", withTimeoutOrNull(250) { resolutions.receive() })
+        }
+    }
 }
