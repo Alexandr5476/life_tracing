@@ -1435,7 +1435,9 @@
       "missingCueAndPlatformFailuresLeaveLaterRequestsEligible",
       "productionFeedbackFactoryDoesNotResolveAudioDuringConstruction",
       "productionGraphAttemptsSoundWithAudioUnavailableAndNotificationPermissionDenied",
-      "replacementAndTimeoutCloseThePreviousCueBeforeAnotherStarts"
+      "replacementAndTimeoutCloseThePreviousCueBeforeAnotherStarts",
+      "restrictedAudioPolicyPreventsStartAndKeepsVibrationEligible",
+      "selectedCueUsesSymbolicDefaultRouteAndFollowsSelectionChanges"
     ],
     "com.alexandr5476.lifetracing.runtime.RuntimeSoundDurabilityTest": [
       "pausedAndManuallyCompletedActivityRejectsSoundFromCapturedDeadline",

@@ -6,12 +6,15 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.PackageManager
+import android.content.res.AssetFileDescriptor
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
+import android.os.ParcelFileDescriptor
+import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -49,6 +52,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
+import java.io.FileNotFoundException
 import java.io.IOException
 import java.time.Duration
 import java.time.Instant
@@ -210,6 +215,118 @@ class RuntimeSoundAndroidTest {
                     assertEquals(id, history.root.executionId)
                     assertEquals(deadline.at, history.root.completedAt)
                     assertNull(reopened.live.getActiveSession())
+                }
+            }
+        }
+
+    @Test(timeout = 30_000)
+    fun selectedCueUsesSymbolicDefaultRouteAndFollowsSelectionChanges() =
+        runBlocking {
+            val first = Uri.parse("content://runtime-sound/inaccessible-first")
+            val second = Uri.parse("content://runtime-sound/inaccessible-second")
+            var selected: Uri? = first
+            var routeAvailable = true
+            var cacheAvailable = true
+            val selections = mutableListOf<Uri?>()
+            val opened = mutableListOf<Uri?>()
+            val cacheRequests = mutableListOf<Uri?>()
+            val playerUriRequests = mutableListOf<Uri?>()
+            val starts = mutableListOf<Int>()
+            val defaultUri = Settings.System.DEFAULT_NOTIFICATION_URI
+            val openRoute: (Uri) -> Unit = { uri ->
+                assertEquals(defaultUri, uri)
+                if (!routeAvailable) throw FileNotFoundException("Default notification route unavailable")
+                opened += selected
+            }
+            val cue =
+                AndroidNotificationCue(
+                    application,
+                    selectedUri = { _, type ->
+                        assertEquals(RingtoneManager.TYPE_NOTIFICATION, type)
+                        selected.also { selections += it }
+                    },
+                    openDefaultUri = { _, uri ->
+                        assertEquals(defaultUri, uri)
+                        cacheRequests += selected
+                        if (!cacheAvailable) throw FileNotFoundException("Cache file unavailable")
+                        openRoute(uri)
+                        application.testCueDescriptor()
+                    },
+                    readAudioPolicy = { unrestrictedAudio },
+                ) {
+                    PreparedMediaPlayer(
+                        openUri = { uri ->
+                            playerUriRequests += selected
+                            openRoute(uri)
+                        },
+                        onRelease = { starts += it },
+                    )
+                }
+
+            suspend fun attempt() =
+                withTimeout(5_000) {
+                    cue.resolve(RingtoneManager.TYPE_NOTIFICATION)?.let { cue.play(it) }
+                }
+
+            attempt()
+            selected = null
+            attempt()
+            assertEquals(listOf(first), opened)
+            assertEquals(listOf(1), starts)
+
+            selected = second
+            routeAvailable = false
+            try {
+                attempt()
+                throw AssertionError("Inaccessible default route unexpectedly played")
+            } catch (_: FileNotFoundException) {
+                assertEquals(listOf(first), opened)
+                assertTrue(starts.drop(1).all { it == 0 })
+            }
+            routeAvailable = true
+            cacheAvailable = false
+            attempt()
+
+            assertEquals(listOf(first, null, second, second), selections)
+            assertEquals(listOf(first, second), opened)
+            assertEquals(listOf(1, 0, 1), starts)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                assertEquals(listOf(first, second, second), cacheRequests)
+                assertEquals(listOf(second, second), playerUriRequests)
+            } else {
+                assertTrue(cacheRequests.isEmpty())
+                assertEquals(listOf(first, second, second), playerUriRequests)
+            }
+        }
+
+    @Test(timeout = 30_000)
+    fun restrictedAudioPolicyPreventsStartAndKeepsVibrationEligible() =
+        runBlocking {
+            val policies =
+                listOf(
+                    unrestrictedAudio,
+                    unrestrictedAudio.copy(ringerMode = AudioManager.RINGER_MODE_SILENT),
+                    unrestrictedAudio.copy(ringerMode = AudioManager.RINGER_MODE_VIBRATE),
+                    unrestrictedAudio.copy(interruptionFilter = NotificationManager.INTERRUPTION_FILTER_PRIORITY),
+                    unrestrictedAudio.copy(interruptionFilter = NotificationManager.INTERRUPTION_FILTER_NONE),
+                    unrestrictedAudio.copy(interruptionFilter = NotificationManager.INTERRUPTION_FILTER_ALARMS),
+                    unrestrictedAudio.copy(interruptionFilter = NotificationManager.INTERRUPTION_FILTER_UNKNOWN),
+                )
+            val feedback = RuntimeDeadlineFeedback(activityDeadline(), soundEnabled = true, vibrationEnabled = true)
+            for (policy in policies) {
+                val released = CompletableDeferred<Int>()
+                var vibrations = 0
+                val cue = application.preparedNotificationCue(policy) { released.complete(it) }
+                val consumer = Job(coroutineContext[Job])
+                try {
+                    val player = AndroidRuntimeSoundPlayer(this + Dispatchers.IO + consumer, cue)
+                    val dispatcher = AndroidRuntimeFeedbackDispatcher(player) { vibrations++ }
+                    dispatcher.dispatch(feedback)
+                    assertEquals("$policy vibration attempts", 1, vibrations)
+                    val expectedStarts = if (policy == unrestrictedAudio) 1 else 0
+                    assertEquals("$policy start attempts", expectedStarts, withTimeout(5_000) { released.await() })
+                } finally {
+                    consumer.cancelAndJoin()
                 }
             }
         }
@@ -377,5 +494,63 @@ class RuntimeSoundAndroidTest {
             probe.releases++
             probe.released.complete(Unit)
         }
+    }
+}
+
+internal val unrestrictedAudio =
+    NotificationAudioPolicy(AudioManager.RINGER_MODE_NORMAL, NotificationManager.INTERRUPTION_FILTER_ALL)
+
+internal fun Context.preparedNotificationCue(
+    policy: NotificationAudioPolicy,
+    onRelease: (Int) -> Unit,
+): AndroidNotificationCue =
+    AndroidNotificationCue(
+        this,
+        selectedUri = { _, _ -> Uri.parse("content://runtime-sound/selected") },
+        openDefaultUri = { context, _ -> context.testCueDescriptor() },
+        readAudioPolicy = { policy },
+    ) { PreparedMediaPlayer(onRelease = onRelease) }
+
+private fun Context.testCueDescriptor(): AssetFileDescriptor =
+    AssetFileDescriptor(
+        ParcelFileDescriptor.open(File(applicationInfo.sourceDir), ParcelFileDescriptor.MODE_READ_ONLY),
+        0,
+        AssetFileDescriptor.UNKNOWN_LENGTH,
+    )
+
+// This player always reaches the prepared gate without decoding or emitting audio.
+private class PreparedMediaPlayer(
+    private val openUri: (Uri) -> Unit = {},
+    private val onRelease: (Int) -> Unit,
+) : MediaPlayer() {
+    private var preparedListener: OnPreparedListener? = null
+    private var completionListener: OnCompletionListener? = null
+    private var startAttempts = 0
+
+    override fun setDataSource(source: AssetFileDescriptor) = Unit
+
+    override fun setDataSource(
+        context: Context,
+        uri: Uri,
+    ) = openUri(uri)
+
+    override fun setOnPreparedListener(listener: OnPreparedListener) {
+        preparedListener = listener
+    }
+
+    override fun setOnCompletionListener(listener: OnCompletionListener) {
+        completionListener = listener
+    }
+
+    override fun prepareAsync() = requireNotNull(preparedListener).onPrepared(this)
+
+    override fun start() {
+        startAttempts++
+        requireNotNull(completionListener).onCompletion(this)
+    }
+
+    override fun release() {
+        super.release()
+        onRelease(startAttempts)
     }
 }

@@ -8,11 +8,15 @@ import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.net.Uri
+import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.android.asCoroutineDispatcher
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.consumeEach
@@ -21,6 +25,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.FileNotFoundException
 import java.io.IOException
 
 internal interface RuntimeNotificationCue {
@@ -74,30 +79,66 @@ internal class AndroidRuntimeSoundPlayer(
 
 internal class AndroidNotificationCue(
     context: Context,
+    private val selectedUri: (Context, Int) -> Uri? = RingtoneManager::getActualDefaultRingtoneUri,
+    private val openDefaultUri: ((Context, Uri) -> AssetFileDescriptor?)? = null,
+    private val readAudioPolicy: (Context) -> NotificationAudioPolicy = ::readNotificationAudioPolicy,
     private val createPlayer: () -> MediaPlayer = ::MediaPlayer,
 ) : RuntimeNotificationCue {
     private val applicationContext = context.applicationContext
 
-    override fun resolve(type: Int): Uri? = RingtoneManager.getActualDefaultRingtoneUri(applicationContext, type)
+    override fun resolve(type: Int): Uri? =
+        selectedUri(applicationContext, type)?.let { RingtoneManager.getDefaultUri(type) }
 
     override suspend fun play(uri: Uri) {
-        // Provider I/O stays on the runtime graph's IO dispatcher. MediaPlayer and its callbacks
-        // share the main looper, with asynchronous preparation and a file descriptor as input.
-        applicationContext.contentResolver.openAssetFileDescriptor(uri, "r")?.use { source ->
-            withContext(Dispatchers.Main) {
-                val player = createPlayer()
-                try {
-                    prepareAndPlay(player, source)
-                } finally {
-                    player.release()
-                }
+        // The graph's IO scope opens the cached default before handing the descriptor to the player.
+        val source = openCachedSource(uri)
+        if (source != null) {
+            source.use { descriptor ->
+                withContext(Dispatchers.Main) { playWithSource { setDataSource(descriptor) } }
             }
+        } else {
+            // On API 26–28, and when the cache file is absent, MediaPlayer resolves the
+            // symbolic URI itself. Keep that provider I/O off main and the player on one looper.
+            val worker = HandlerThread("LifeTracing notification cue").apply { start() }
+            try {
+                withContext(Handler(worker.looper).asCoroutineDispatcher()) {
+                    playWithSource { setDataSource(applicationContext, uri) }
+                }
+            } finally {
+                worker.quit()
+            }
+        }
+    }
+
+    private fun openCachedSource(uri: Uri): AssetFileDescriptor? =
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            null
+        } else {
+            try {
+                if (openDefaultUri != null) {
+                    openDefaultUri(applicationContext, uri)
+                } else {
+                    RingtoneManager.openDefaultRingtoneUri(applicationContext, uri)
+                }
+            } catch (_: FileNotFoundException) {
+                // Some platform versions throw for a missing cache file before trying the selected cue.
+                // MediaPlayer can still resolve the symbolic URI.
+                null
+            }
+        }
+
+    private suspend fun playWithSource(setSource: MediaPlayer.() -> Unit) {
+        val player = createPlayer()
+        try {
+            prepareAndPlay(player, setSource)
+        } finally {
+            player.release()
         }
     }
 
     private suspend fun prepareAndPlay(
         player: MediaPlayer,
-        source: AssetFileDescriptor,
+        setSource: MediaPlayer.() -> Unit,
     ) {
         val prepared = CompletableDeferred<Boolean>()
         val finished = CompletableDeferred<Unit>()
@@ -115,21 +156,29 @@ internal class AndroidNotificationCue(
             finished.complete(Unit)
             true
         }
-        player.setDataSource(source)
+        player.setSource()
         player.prepareAsync()
-        if (prepared.await() && !finished.isCompleted && allowsPlayback()) {
+        if (prepared.await() && !finished.isCompleted && readAudioPolicy(applicationContext).allowsPlayback()) {
             currentCoroutineContext().ensureActive()
             player.start()
             finished.await()
         }
     }
+}
 
-    private fun allowsPlayback(): Boolean {
+internal data class NotificationAudioPolicy(
+    val ringerMode: Int,
+    val interruptionFilter: Int,
+) {
+    fun allowsPlayback(): Boolean =
         // A standalone cue has no priority-notification category. On older Android versions
         // notification audio attributes alone do not suppress this playback in priority DND.
-        val notifications = applicationContext.getSystemService(NotificationManager::class.java)
-        val audio = applicationContext.getSystemService(AudioManager::class.java)
-        return notifications.currentInterruptionFilter == NotificationManager.INTERRUPTION_FILTER_ALL &&
-            audio.ringerMode == AudioManager.RINGER_MODE_NORMAL
-    }
+        interruptionFilter == NotificationManager.INTERRUPTION_FILTER_ALL &&
+            ringerMode == AudioManager.RINGER_MODE_NORMAL
+}
+
+private fun readNotificationAudioPolicy(context: Context): NotificationAudioPolicy {
+    val notifications = context.getSystemService(NotificationManager::class.java)
+    val audio = context.getSystemService(AudioManager::class.java)
+    return NotificationAudioPolicy(audio.ringerMode, notifications.currentInterruptionFilter)
 }

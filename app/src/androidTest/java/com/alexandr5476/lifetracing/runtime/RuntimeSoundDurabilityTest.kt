@@ -1,5 +1,6 @@
 package com.alexandr5476.lifetracing.runtime
 
+import android.app.NotificationManager
 import android.media.RingtoneManager
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
@@ -63,12 +64,19 @@ import java.time.ZoneOffset
 class RuntimeSoundDurabilityTest {
     private val application = ApplicationProvider.getApplicationContext<RuntimeIsolationApplication>()
 
-    @Test
+    @Test(timeout = 60_000)
     fun standaloneTimerUsesFrozenFlagsAtExactAndLateDeliveryAndAfterReopen() =
         runBlocking {
             assertStandaloneTimer(sound = true, deliveryDelayMs = 0)
             assertStandaloneTimer(sound = true, deliveryDelayMs = 7_000)
             assertStandaloneTimer(sound = false, deliveryDelayMs = 0)
+            val audio = Job(coroutineContext[Job])
+            try {
+                val muted = MutedPlayback(CoroutineScope(coroutineContext + audio))
+                assertStandaloneTimer(sound = true, deliveryDelayMs = 0, muted = muted)
+            } finally {
+                audio.cancelAndJoin()
+            }
         }
 
     @Test
@@ -165,11 +173,13 @@ class RuntimeSoundDurabilityTest {
     private suspend fun assertStandaloneTimer(
         sound: Boolean,
         deliveryDelayMs: Long,
+        muted: MutedPlayback? = null,
     ) {
+        val vibration = muted != null || !sound
         application.withDisposableDatabase { fixture ->
             val original =
                 RuntimeRecoveryStore(application, fixture.name).use { store ->
-                    val draft = timerDraft(sound)
+                    val draft = timerDraft(sound, vibration)
                     val template = store.authoring.createActivityTemplate(draft, createdAt = at(0))
                     val started = store.library.startActivityFromTemplate(template.id, at(0), at(0), ZoneOffset.UTC)
                     val frozen = store.live.getActiveRuntime() as ActiveActivityRuntime
@@ -179,14 +189,14 @@ class RuntimeSoundDurabilityTest {
                         store.authoring.saveActivityTemplate(
                             template.id,
                             template.revision,
-                            draft.copy(settings = timerDraft(!sound).settings),
+                            draft.copy(settings = timerDraft(!sound, !vibration).settings),
                             at(1),
                         )
                     assertEquals(!sound, changed.settings.timerEndSound)
-                    assertEquals(sound, changed.settings.timerEndVibration)
+                    assertEquals(!vibration, changed.settings.timerEndVibration)
                     assertEquals(frozen, store.live.getActiveRuntime())
 
-                    val process = Process(store, at(0))
+                    val process = Process(store, at(0), soundPlayer = muted?.player ?: RuntimeSoundPlayer {})
                     val deadline =
                         RuntimeDeadline(
                             at(5),
@@ -204,8 +214,11 @@ class RuntimeSoundDurabilityTest {
                     assertEquals(deadline, process.local.deadline)
                     process.assertDispatches()
 
-                    val expected = RuntimeDeadlineFeedback(deadline, sound, !sound)
-                    process.signal(deadline, at(5).plusMillis(deliveryDelayMs))
+                    val expected = RuntimeDeadlineFeedback(deadline, sound, vibration)
+                    val cancellations = process.scheduler.cancellations
+                    process.accept(store, expected, at(5).plusMillis(deliveryDelayMs))
+                    muted?.assertSuppressed()
+                    assertEquals(cancellations + 1, process.scheduler.cancellations)
                     process.assertDispatches(expected)
                     process.coordinator.onDeadlineSignal(deadline)
                     process.coordinator.onForeground()
@@ -318,8 +331,10 @@ class RuntimeSoundDurabilityTest {
     ): ReopenedPlanSequence =
         coroutineScope {
             val audioJob = Job(coroutineContext[Job])
+            val audioScope = CoroutineScope(coroutineContext + audioJob)
             val unavailable = UnavailableCue()
-            val silentPlayer = AndroidRuntimeSoundPlayer(CoroutineScope(coroutineContext + audioJob), unavailable)
+            val silentPlayer = AndroidRuntimeSoundPlayer(audioScope, unavailable)
+            val muted = if (outcome == SoundOutcome.MUTED) MutedPlayback(audioScope) else null
             val events = sequenceEvents(start, soundFlags = listOf(true, true), vibrationFlags = listOf(true, true))
             val (childIds, intervalIds) =
                 try {
@@ -335,6 +350,7 @@ class RuntimeSoundDurabilityTest {
                                         SoundOutcome.SUCCESS -> successfulPlays++
                                         SoundOutcome.THROWING -> throw RuntimeException("injected sound failure")
                                         SoundOutcome.MISSING_CUE -> silentPlayer.play()
+                                        SoundOutcome.MUTED -> requireNotNull(muted).player.play()
                                     }
                                 }
                             val process = Process(store, at(0), soundPlayer = soundPlayer)
@@ -343,7 +359,9 @@ class RuntimeSoundDurabilityTest {
                             for ((index, event) in events.withIndex()) {
                                 val delaySeconds = if (index == events.lastIndex) 2L else 0L
                                 val delivery = event.deadline.at.plusSeconds(delaySeconds)
+                                val cancellations = process.scheduler.cancellations
                                 process.accept(store, event, delivery)
+                                muted?.assertSuppressed()
                                 if (outcome == SoundOutcome.MISSING_CUE) {
                                     val type = withTimeout(5_000) { unavailable.resolutions.receive() }
                                     assertEquals(RingtoneManager.TYPE_NOTIFICATION, type)
@@ -357,6 +375,8 @@ class RuntimeSoundDurabilityTest {
                                     val action = observer.planReads.getFocusedAction(plan.id)
                                     assertEquals(PlanEntryStatus.PLANNED, action.identity.status)
                                     assertTrue(action.engaged)
+                                } else {
+                                    assertEquals(cancellations + 1, process.scheduler.cancellations)
                                 }
                                 if (event.deadline.kind == RuntimeDeadlineKind.SEQUENCE_TRANSITION_COUNTDOWN) {
                                     children += requireNotNull(published?.currentChild).id
@@ -594,18 +614,35 @@ class RuntimeSoundDurabilityTest {
         occurrence: SequenceOccurrenceId,
     ) = SequenceInterval(SequenceIntervalId("expected"), kind, opened, closed, occurrence)
 
-    private fun timerDraft(sound: Boolean) =
-        ActivityTemplateDraft(
-            "Feedback timer",
-            null,
-            TimeTrackingMode.TIMER,
-            Duration.ofSeconds(5),
-            ActivityTemplateSettings(timerEndSound = sound, timerEndVibration = !sound),
-        )
+    private fun timerDraft(
+        sound: Boolean,
+        vibration: Boolean = !sound,
+    ) = ActivityTemplateDraft(
+        "Feedback timer",
+        null,
+        TimeTrackingMode.TIMER,
+        Duration.ofSeconds(5),
+        ActivityTemplateSettings(timerEndSound = sound, timerEndVibration = vibration),
+    )
 
     private fun at(seconds: Long): Instant = origin.plusSeconds(seconds)
 
-    private enum class SoundOutcome { SUCCESS, THROWING, MISSING_CUE }
+    private enum class SoundOutcome { SUCCESS, THROWING, MISSING_CUE, MUTED }
+
+    private inner class MutedPlayback(
+        scope: CoroutineScope,
+    ) {
+        private val startsAtRelease = Channel<Int>(Channel.CONFLATED)
+        private val cue =
+            application.preparedNotificationCue(
+                unrestrictedAudio.copy(interruptionFilter = NotificationManager.INTERRUPTION_FILTER_NONE),
+            ) { check(startsAtRelease.trySend(it).isSuccess) }
+        val player = AndroidRuntimeSoundPlayer(scope, cue)
+
+        suspend fun assertSuppressed() {
+            assertEquals(0, withTimeout(5_000) { startsAtRelease.receive() })
+        }
+    }
 
     private class UnavailableCue : RuntimeNotificationCue {
         val resolutions = Channel<Int>(Channel.UNLIMITED)
